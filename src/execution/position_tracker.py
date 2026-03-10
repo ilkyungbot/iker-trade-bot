@@ -85,6 +85,7 @@ class PositionTracker:
             slippage=slippage,
             stop_loss_hit=stop_loss_hit,
             trailing_stop_hit=trailing_stop_hit,
+            metadata=position.metadata,
         )
 
         # Update portfolio state

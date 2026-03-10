@@ -42,14 +42,14 @@ class Retrainer:
         """Check if monthly retrain is due."""
         if last_retrain is None:
             return True
-        now = now or datetime.utcnow()
+        now = now or datetime.now()
         return (now - last_retrain).days >= 30
 
     def should_review_params(self, last_review: datetime | None, now: datetime | None = None) -> bool:
         """Check if quarterly parameter review is due."""
         if last_review is None:
             return True
-        now = now or datetime.utcnow()
+        now = now or datetime.now()
         return (now - last_review).days >= 90
 
     def evaluate_ml_model(

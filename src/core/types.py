@@ -103,6 +103,7 @@ class Position:
     unrealized_pnl: float = 0.0
     highest_pnl: float = 0.0  # for trailing stop tracking
     exchange_sl_order_id: str | None = None
+    metadata: dict = field(default_factory=dict)  # carries ml_features etc.
 
     @property
     def notional_value(self) -> float:

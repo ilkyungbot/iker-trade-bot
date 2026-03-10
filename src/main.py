@@ -81,6 +81,9 @@ class TradingBot:
         self._last_retrain: datetime | None = None
         self._last_param_review: datetime | None = None
         self._candle_cache: dict[str, dict[str, list]] = {}  # symbol -> interval -> candles
+        # Mutable allocation weights (updated by retrainer)
+        self._strategy_a_alloc = config.trading.strategy_a_allocation
+        self._strategy_b_alloc = config.trading.strategy_b_allocation
 
     async def start(self) -> None:
         """Start the trading bot with scheduled jobs."""
@@ -246,10 +249,10 @@ class TradingBot:
                 latest_funding_rate=latest_funding,
             )
 
-            # Process signals
+            # Process signals (use mutable allocation weights)
             for signal, allocation in [
-                (signal_a, self.config.trading.strategy_a_allocation),
-                (signal_b, self.config.trading.strategy_b_allocation),
+                (signal_a, self._strategy_a_alloc),
+                (signal_b, self._strategy_b_alloc),
             ]:
                 if signal is None:
                     continue
@@ -347,6 +350,21 @@ class TradingBot:
                     self.order_manager.close_position(positions[signal.symbol])
                 return
 
+            # Build metadata with ML features for future retraining
+            entry_metadata = {}
+            if feature_row is not None:
+                entry_metadata["ml_features"] = {
+                    "atr_pct": feature_row.atr_pct,
+                    "adx": feature_row.adx,
+                    "rsi": feature_row.rsi,
+                    "bb_width": feature_row.bb_width,
+                    "volume_ratio": feature_row.volume_ratio,
+                    "ema_20_slope": feature_row.ema_20_slope,
+                    "ema_50_slope": feature_row.ema_50_slope,
+                    "donchian_position": feature_row.donchian_position,
+                    "funding_rate": feature_row.funding_rate,
+                }
+
             # Track position
             position = Position(
                 symbol=signal.symbol,
@@ -358,6 +376,7 @@ class TradingBot:
                 trailing_stop=signal.take_profit,
                 strategy=signal.strategy,
                 entry_time=datetime.now(timezone.utc),
+                metadata=entry_metadata,
             )
             self.position_tracker.add_position(position)
 
@@ -366,17 +385,19 @@ class TradingBot:
 
     async def _execute_exit(self, symbol: str, current_price: float) -> None:
         """Execute an exit signal."""
+        # Find the position BEFORE closing (close_position removes it from the list)
+        position = next(
+            (p for p in self.position_tracker.state.positions if p.symbol == symbol),
+            None,
+        )
+
         trade = self.position_tracker.close_position(
             symbol, current_price, fees=current_price * 0.0004,  # ~0.04% round trip
         )
         if trade:
             self.trade_logger.log_trade(trade)
-            self.order_manager.close_position(
-                next(
-                    (p for p in self.position_tracker.state.positions if p.symbol == symbol),
-                    None,
-                ) or trade  # fallback
-            )
+            if position:
+                self.order_manager.close_position(position)
             await self.reporter.send_trade_alert(trade)
 
     async def _check_stops(self) -> None:
@@ -402,6 +423,8 @@ class TradingBot:
         logger.info("Running daily tasks...")
 
         trades = self.storage.get_trades()
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_trades = self.storage.get_trades(start=today_start)
         metrics = calculate_metrics(trades)
 
         await self.reporter.send_daily_report(
@@ -418,7 +441,7 @@ class TradingBot:
             cumulative_pnl=state.total_capital - self.position_tracker.initial_capital,
             max_drawdown=state.current_mdd,
             open_positions=state.position_count,
-            trades_today=0,
+            trades_today=len(today_trades),
             win_rate=metrics.win_rate,
         )
 
@@ -511,9 +534,13 @@ class TradingBot:
 
         # Check allocation adjustment
         if self.retrainer.should_review_params(self._last_param_review):
-            adj = self.retrainer.calculate_allocation_adjustment(trades)
+            adj = self.retrainer.calculate_allocation_adjustment(
+                trades, self._strategy_a_alloc, self._strategy_b_alloc,
+            )
+            self._strategy_a_alloc = adj.strategy_a_weight
+            self._strategy_b_alloc = adj.strategy_b_weight
             logger.info(
-                f"Allocation review: A={adj.strategy_a_weight:.0%}, "
+                f"Allocation updated: A={adj.strategy_a_weight:.0%}, "
                 f"B={adj.strategy_b_weight:.0%} — {adj.reason}"
             )
             self._last_param_review = datetime.now(timezone.utc)
@@ -521,7 +548,7 @@ class TradingBot:
         self.position_tracker.reset_weekly_pnl()
 
     async def heartbeat(self) -> None:
-        """Send periodic health check."""
+        """Send periodic health check via log and Telegram."""
         state = self.position_tracker.state
         msg = (
             f"Heartbeat: Capital={state.total_capital:,.0f} "
@@ -530,6 +557,7 @@ class TradingBot:
             f"CB={state.circuit_breaker_state.value}"
         )
         logger.info(msg)
+        await self.reporter.send_alert(msg)
 
     def stop(self) -> None:
         self._running = False
