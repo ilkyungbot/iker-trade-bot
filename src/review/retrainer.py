@@ -148,6 +148,14 @@ class Retrainer:
         new_a /= total
         new_b /= total
 
+        # Re-clamp after normalization to enforce constraints
+        new_a = max(0.50, min(0.90, new_a))
+        new_b = max(0.10, min(0.50, new_b))
+        # Re-normalize after re-clamping
+        total = new_a + new_b
+        new_a /= total
+        new_b /= total
+
         return AllocationAdjustment(
             strategy_a_weight=new_a,
             strategy_b_weight=new_b,

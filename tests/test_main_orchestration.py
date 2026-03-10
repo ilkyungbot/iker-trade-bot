@@ -46,6 +46,7 @@ def _make_bot():
     bot.storage = MagicMock()
     bot.storage.get_trades.return_value = []
     bot.order_manager = MagicMock()
+    bot.order_manager.place_entry_order = AsyncMock()
     bot.reporter = AsyncMock()
     bot.position_tracker = MagicMock()
     bot.position_tracker.initial_capital = 100_000

@@ -108,7 +108,14 @@ class MLConfidenceModel:
             )
             model.fit(X_train, y_train)
 
-            # Validate
+            # Validate — skip evaluation if validation set has only one class
+            if len(np.unique(y_val)) < 2:
+                logger.warning("Validation set has only one class, skipping evaluation — keeping model")
+                self._model = model
+                self._accuracy = None
+                self._disabled = False
+                return True
+
             val_preds = model.predict(X_val)
             self._accuracy = float(np.mean(val_preds == y_val))
 

@@ -38,14 +38,16 @@ class TestMetrics:
         trades = [_make_trade(pnl=100) for _ in range(5)]
         m = calculate_metrics(trades)
         assert m.win_rate == 1.0
-        assert m.total_pnl == 500
+        assert m.total_pnl == 525  # gross: 500 pnl + 25 fees
+        assert m.net_pnl == 500    # net: 525 - 25 fees
         assert m.winning_trades == 5
 
     def test_all_losers(self):
         trades = [_make_trade(pnl=-50) for _ in range(5)]
         m = calculate_metrics(trades)
         assert m.win_rate == 0.0
-        assert m.total_pnl == -250
+        assert m.total_pnl == -225  # gross: -250 + 25 fees
+        assert m.net_pnl == -250    # net: -225 - 25 fees
 
     def test_mixed(self):
         trades = [

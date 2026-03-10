@@ -34,6 +34,10 @@ class PositionTracker:
             logger.warning("Max concurrent positions reached")
             return False
 
+        if self._find_position(position.symbol) is not None:
+            logger.warning(f"Position already exists for {position.symbol}")
+            return False
+
         self.state.positions.append(position)
         self.state.available_capital -= position.margin_used
         logger.info(f"Tracking new {position.side.value} position for {position.symbol}")
@@ -108,7 +112,7 @@ class PositionTracker:
         if pnl > 0:
             self.state.consecutive_wins += 1
             self.state.consecutive_losses = 0
-        else:
+        elif pnl < 0:
             self.state.consecutive_losses += 1
             self.state.consecutive_wins = 0
 

@@ -5,6 +5,7 @@ Places orders, sets stop-losses, manages order lifecycle.
 All exchange interactions go through this module.
 """
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -55,7 +56,7 @@ class OrderManager:
         self._paper_positions: dict[str, Position] = {}
         self._paper_orders: list[Order] = []
 
-    def place_entry_order(
+    async def place_entry_order(
         self,
         signal: Signal,
         quantity: float,
@@ -136,7 +137,7 @@ class OrderManager:
 
             # Poll order status until filled, cancelled, or timeout
             if order.exchange_order_id:
-                order = self._poll_order_status(order)
+                order = await self._poll_order_status(order)
 
             return order
 
@@ -211,7 +212,7 @@ class OrderManager:
             logger.error(f"Failed to close position for {position.symbol}: {e}")
             return False
 
-    def _poll_order_status(
+    async def _poll_order_status(
         self,
         order: Order,
         max_wait_seconds: int = 30,
@@ -235,12 +236,38 @@ class OrderManager:
                 orders_list = resp.get("result", {}).get("list", [])
 
                 if not orders_list:
-                    # Order no longer in open-orders list → treat as filled
-                    order.status = OrderStatus.FILLED
-                    order.filled_at = datetime.now(timezone.utc)
-                    logger.info(
-                        f"Order {order.exchange_order_id} for {order.symbol} filled"
-                    )
+                    # Order disappeared from open-orders list — could be
+                    # filled OR cancelled externally.  Check positions to
+                    # confirm a fill actually occurred.
+                    try:
+                        pos_resp = self.client.get_positions(
+                            category="linear", symbol=order.symbol,
+                        )
+                        pos_list = pos_resp.get("result", {}).get("list", [])
+                        has_position = any(
+                            float(p.get("size", 0)) > 0 for p in pos_list
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not verify position for {order.symbol} "
+                            f"after order disappeared: {e}"
+                        )
+                        has_position = False
+
+                    if has_position:
+                        order.status = OrderStatus.FILLED
+                        order.filled_at = datetime.now(timezone.utc)
+                        logger.info(
+                            f"Order {order.exchange_order_id} for "
+                            f"{order.symbol} filled (confirmed via position)"
+                        )
+                    else:
+                        order.status = OrderStatus.REJECTED
+                        logger.warning(
+                            f"Order {order.exchange_order_id} for "
+                            f"{order.symbol} disappeared from open orders "
+                            f"but no position found — likely cancelled externally"
+                        )
                     return order
 
                 exchange_status = orders_list[0].get("orderStatus", "").lower()
@@ -262,7 +289,7 @@ class OrderManager:
             except Exception as e:
                 logger.warning(f"Error polling order status: {e}")
 
-            time.sleep(poll_interval)
+            await asyncio.sleep(poll_interval)
 
         # Timed out — order still open
         logger.warning(

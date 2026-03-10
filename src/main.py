@@ -3,6 +3,7 @@ Main entry point: wires all layers together and runs the trading loop.
 """
 
 import asyncio
+import functools
 import logging
 import math
 import signal
@@ -117,7 +118,9 @@ class TradingBot:
                 await asyncio.sleep(1)
         except (KeyboardInterrupt, SystemExit):
             logger.info("Shutting down...")
+        finally:
             scheduler.shutdown()
+            logger.info("Scheduler stopped.")
 
     async def trading_cycle(self) -> None:
         """Main hourly trading cycle."""
@@ -146,17 +149,25 @@ class TradingBot:
             if self.circuit_breaker.record_api_error():
                 await self.reporter.send_alert(f"API error threshold breached: {e}")
 
+    async def _run_sync(self, func, *args, **kwargs):
+        """Run a synchronous function in an executor to avoid blocking the event loop."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, functools.partial(func, *args, **kwargs),
+        )
+
     async def _update_pairs(self) -> None:
         """Update pair selection if rebalance is due."""
         try:
-            tickers = self.collector.get_all_usdt_perpetuals()
+            tickers = await self._run_sync(self.collector.get_all_usdt_perpetuals)
 
             # Fetch candle data for top candidates
             candle_data = {}
             for t in tickers[:30]:  # top 30 by volume
                 symbol = t["symbol"]
                 try:
-                    candles = self.collector.get_candles(
+                    candles = await self._run_sync(
+                        self.collector.get_candles,
                         symbol=symbol,
                         interval=self.config.trading.primary_interval,
                         start_time=datetime.now(timezone.utc) - timedelta(days=210),
@@ -180,11 +191,13 @@ class TradingBot:
             lookback_1h = timedelta(days=60)
             lookback_4h = timedelta(days=120)
 
-            candles_1h = self.collector.get_candles(
+            candles_1h = await self._run_sync(
+                self.collector.get_candles,
                 symbol, self.config.trading.primary_interval,
                 start_time=now - lookback_1h,
             )
-            candles_4h = self.collector.get_candles(
+            candles_4h = await self._run_sync(
+                self.collector.get_candles,
                 symbol, self.config.trading.trend_interval,
                 start_time=now - lookback_4h,
             )
@@ -224,7 +237,8 @@ class TradingBot:
             # Get latest funding rate
             latest_funding = None
             try:
-                rates = self.collector.get_funding_rates(
+                rates = await self._run_sync(
+                    self.collector.get_funding_rates,
                     symbol, start_time=now - timedelta(hours=24),
                 )
                 if rates:
@@ -250,10 +264,36 @@ class TradingBot:
             )
 
             # Process signals (use mutable allocation weights)
-            for signal, allocation in [
+            signals = [
                 (signal_a, self._strategy_a_alloc),
                 (signal_b, self._strategy_b_alloc),
-            ]:
+            ]
+
+            # Detect conflicting entry signals: if both strategies want to
+            # enter opposite directions in the same cycle, keep only the
+            # higher-confidence one.
+            entry_signals = [
+                (s, alloc) for s, alloc in signals
+                if s is not None and s.action in (SignalAction.ENTER_LONG, SignalAction.ENTER_SHORT)
+            ]
+            if len(entry_signals) == 2:
+                s0, s1 = entry_signals[0][0], entry_signals[1][0]
+                if s0.action != s1.action:
+                    # Conflicting directions — keep higher confidence, discard other
+                    winner = entry_signals[0] if s0.confidence >= s1.confidence else entry_signals[1]
+                    logger.info(
+                        f"Conflicting signals for {symbol}: "
+                        f"{s0.action.value} (conf={s0.confidence:.2f}) vs "
+                        f"{s1.action.value} (conf={s1.confidence:.2f}) — "
+                        f"keeping {winner[0].action.value}"
+                    )
+                    signals = [
+                        (s, alloc) if s is None or s is winner[0] or s.action == SignalAction.EXIT
+                        else (None, alloc)
+                        for s, alloc in signals
+                    ]
+
+            for signal, allocation in signals:
                 if signal is None:
                     continue
 
@@ -333,7 +373,7 @@ class TradingBot:
                 break
 
         # Place order
-        order = self.order_manager.place_entry_order(
+        order = await self.order_manager.place_entry_order(
             signal=signal,
             quantity=adjusted_quantity,
             leverage=self.config.trading.default_leverage,
@@ -391,13 +431,16 @@ class TradingBot:
             None,
         )
 
+        # Close on exchange FIRST — if this fails, don't update internal state
+        if position:
+            self.order_manager.close_position(position)
+
+        notional = current_price * position.quantity if position else 0.0
         trade = self.position_tracker.close_position(
-            symbol, current_price, fees=current_price * 0.0004,  # ~0.04% round trip
+            symbol, current_price, fees=notional * 0.0004,  # ~0.04% round trip
         )
         if trade:
             self.trade_logger.log_trade(trade)
-            if position:
-                self.order_manager.close_position(position)
             await self.reporter.send_trade_alert(trade)
 
     async def _check_stops(self) -> None:
@@ -405,7 +448,8 @@ class TradingBot:
         prices = {}
         for pos in self.position_tracker.state.positions:
             try:
-                candles = self.collector.get_candles(
+                candles = await self._run_sync(
+                    self.collector.get_candles,
                     pos.symbol, "1", datetime.now(timezone.utc) - timedelta(minutes=5),
                 )
                 if candles:
@@ -507,8 +551,10 @@ class TradingBot:
                 trained = self.ml_model.train(feature_rows)
 
                 if trained:
-                    # Evaluate: confidence > 1.0 means model predicts profitable
-                    for row in feature_rows:
+                    # Evaluate on held-out data only (last 20%, matching train split)
+                    val_start = int(len(feature_rows) * 0.8)
+                    val_rows = feature_rows[val_start:]
+                    for row in val_rows:
                         conf = self.ml_model.predict_confidence(row)
                         # Map confidence back to 0/1: >1.0 = predicts profitable
                         predictions.append(1.0 if conf > 1.0 else 0.0)

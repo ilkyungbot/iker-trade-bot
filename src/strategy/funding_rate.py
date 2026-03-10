@@ -44,6 +44,7 @@ class FundingRateStrategy(Strategy):
         df_4h: pd.DataFrame,
         symbol: str,
         current_position_side: str | None = None,
+        *,
         latest_funding_rate: float | None = None,
     ) -> Signal | None:
         """
@@ -72,7 +73,7 @@ class FundingRateStrategy(Strategy):
         atr = current["atr"]
         rsi = current["rsi"]
 
-        if pd.isna(atr) or pd.isna(rsi) or atr <= 0:
+        if pd.isna(close) or pd.isna(atr) or pd.isna(rsi) or atr <= 0:
             return None
 
         timestamp = current.get("timestamp", datetime.now(timezone.utc))
@@ -102,7 +103,7 @@ class FundingRateStrategy(Strategy):
         if abs(latest_funding_rate) < FUNDING_EXTREME_THRESHOLD:
             return None
 
-        if latest_funding_rate > FUNDING_EXTREME_THRESHOLD:
+        if latest_funding_rate >= FUNDING_EXTREME_THRESHOLD:
             # Funding is very positive → longs are paying shorts
             # → Market is overleveraged long → short opportunity
             # BUT only if price shows weakness (RSI overbought or declining)
@@ -128,7 +129,7 @@ class FundingRateStrategy(Strategy):
                 },
             )
 
-        elif latest_funding_rate < -FUNDING_EXTREME_THRESHOLD:
+        elif latest_funding_rate <= -FUNDING_EXTREME_THRESHOLD:
             # Funding is very negative → shorts are paying longs
             # → Market is overleveraged short → long opportunity
             if rsi > RSI_OVERSOLD:

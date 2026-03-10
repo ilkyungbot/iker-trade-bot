@@ -9,11 +9,15 @@ from sizing.ml_model import MLConfidenceModel, FeatureRow
 
 
 def _make_feature_rows(n: int = 50, profitable_ratio: float = 0.6) -> list[FeatureRow]:
-    """Create synthetic feature rows for testing."""
+    """Create synthetic feature rows for testing.
+
+    Interleaves profitable/unprofitable rows so train/val splits have both classes.
+    """
     np.random.seed(42)
     rows = []
     for i in range(n):
-        profitable = i < int(n * profitable_ratio)
+        # Interleave: use modular distribution so both classes appear throughout
+        profitable = (i % 5) < int(5 * profitable_ratio)
         rows.append(FeatureRow(
             atr_pct=np.random.uniform(0.01, 0.05),
             adx=np.random.uniform(15, 50) if profitable else np.random.uniform(10, 25),

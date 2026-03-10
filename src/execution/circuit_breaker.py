@@ -87,8 +87,9 @@ class CircuitBreaker:
                 return CircuitBreakerState.WEEKLY_HALT
 
         # Daily loss > 3% → halt 24h
-        if initial_cap > 0:
-            daily_loss_pct = abs(min(state.daily_pnl, 0)) / initial_cap
+        daily_initial_cap = state.total_capital - state.daily_pnl
+        if daily_initial_cap > 0:
+            daily_loss_pct = abs(min(state.daily_pnl, 0)) / daily_initial_cap
             if daily_loss_pct >= MAX_DAILY_LOSS:
                 self._halt_until = datetime.now(timezone.utc) + timedelta(hours=24)
                 state.circuit_breaker_state = CircuitBreakerState.DAILY_HALT
@@ -105,10 +106,11 @@ class CircuitBreaker:
                 f"Consecutive loss streak: {state.consecutive_losses}. Size reduced to 70%."
             )
 
-        # Recovery from consecutive losses
+        # Recovery from consecutive losses (only if MDD is below reduction threshold)
         if state.consecutive_wins >= 3 and self._size_reduction < 1.0:
-            self._size_reduction = 1.0
-            logger.info("Consecutive win recovery: size restored to 100%.")
+            if state.current_mdd < MDD_SIZE_REDUCTION_THRESHOLD:
+                self._size_reduction = 1.0
+                logger.info("Consecutive win recovery: size restored to 100%.")
 
         return state.circuit_breaker_state
 
@@ -142,9 +144,10 @@ class CircuitBreaker:
 
         staleness = (now - last_data_time).total_seconds()
         if staleness > MAX_DATA_STALENESS_SECONDS:
+            self._halt_until = now + timedelta(hours=1)
             logger.warning(
                 f"DATA STALE: Last data {staleness:.0f}s ago "
-                f"(limit: {MAX_DATA_STALENESS_SECONDS}s). Trading halted."
+                f"(limit: {MAX_DATA_STALENESS_SECONDS}s). Trading halted for 1 hour."
             )
             return True
         return False

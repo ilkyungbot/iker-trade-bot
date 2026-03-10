@@ -324,7 +324,7 @@ class TestEndToEnd:
             current_mdd=0.0,
             consecutive_losses=0,
         )
-        bot.order_manager = MagicMock()
+        bot.order_manager = AsyncMock()
         bot.order_manager.place_entry_order.return_value = None  # order not filled
 
         bot.circuit_breaker = MagicMock()

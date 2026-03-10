@@ -41,7 +41,7 @@ class DataValidator:
             return ValidationResult(
                 is_valid=False,
                 gaps=[],
-                anomalies=[("N/A", "No candles provided")],
+                anomalies=[(datetime.now(timezone.utc), "No candles provided")],
                 is_stale=True,
                 stale_seconds=float("inf"),
             )

@@ -68,6 +68,12 @@ class Reporter:
         action = "LONG" if signal.action == SignalAction.ENTER_LONG else "SHORT"
         if signal.action == SignalAction.EXIT:
             action = "EXIT"
+            return (
+                f"<b>Signal: {action}</b>\n"
+                f"Pair: {signal.symbol}\n"
+                f"Strategy: {signal.strategy.value}\n"
+                f"Confidence: {signal.confidence:.0%}"
+            )
         return (
             f"<b>Signal: {action}</b>\n"
             f"Pair: {signal.symbol}\n"

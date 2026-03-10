@@ -75,7 +75,9 @@ class TrendFollowingStrategy(Strategy):
         ema_trending_down = ema_4h < ema_4h_prev
 
         # Skip if data is invalid
-        if pd.isna(adx) or pd.isna(atr) or pd.isna(donchian_high) or pd.isna(donchian_low):
+        if pd.isna(close) or pd.isna(adx) or pd.isna(atr) or pd.isna(donchian_high) or pd.isna(donchian_low):
+            return None
+        if pd.isna(ema_4h) or pd.isna(ema_4h_prev):
             return None
         if atr <= 0:
             return None

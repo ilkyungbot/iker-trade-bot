@@ -54,9 +54,10 @@ def calculate_metrics(trades: list[Trade]) -> PerformanceMetrics:
     avg_loss = abs(sum(t.pnl for t in losses) / len(losses)) if losses else 0
     payoff_ratio = avg_win / avg_loss if avg_loss > 0 else float("inf")
 
-    total_pnl = sum(t.pnl for t in trades)
     total_fees = sum(t.fees for t in trades)
-    net_pnl = total_pnl
+    # t.pnl already has fees subtracted (in position_tracker), so add back for gross
+    total_pnl = sum(t.pnl + t.fees for t in trades)
+    net_pnl = total_pnl - total_fees
 
     # Max drawdown from cumulative PnL
     cumulative = 0.0

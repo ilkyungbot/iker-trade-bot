@@ -51,8 +51,8 @@ class TestCalculatePositionSize:
             capital=10000, risk_fraction=0.01,
             entry_price=100, stop_loss=98, leverage=5,
         )
-        # Risk amount = $100, risk per unit = $2, qty = 50
-        assert qty == 50.0
+        # Risk amount = $100, risk per unit = $2, base_qty = 50, * 5x leverage = 250
+        assert qty == 250.0
 
     def test_zero_capital(self):
         assert calculate_position_size(0, 0.01, 100, 98, 5) == 0.0
@@ -66,4 +66,4 @@ class TestCalculatePositionSize:
             capital=10000, risk_fraction=0.01,
             entry_price=100, stop_loss=102, leverage=5,
         )
-        assert qty == 50.0  # same math, abs(100-102) = 2
+        assert qty == 250.0  # same math, abs(100-102) = 2, base=50, *5x=250

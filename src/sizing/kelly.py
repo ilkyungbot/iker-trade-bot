@@ -75,7 +75,10 @@ def calculate_position_size(
     # risk_per_unit = how much we lose per 1 unit of base currency if stop is hit
     risk_per_unit = risk_distance
 
-    # Quantity in base currency
-    quantity = risk_amount / risk_per_unit
+    # Quantity in base currency (margin-based)
+    margin_quantity = risk_amount / risk_per_unit
+
+    # Scale by leverage: notional position = leverage * margin
+    quantity = margin_quantity * leverage
 
     return quantity

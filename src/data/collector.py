@@ -88,14 +88,11 @@ class BybitCollector:
                     all_candles.append(candle)
 
                 # Bybit returns newest first, so last element has oldest timestamp
-                oldest_ts = int(result_list[-1][0])
-                if oldest_ts <= current_start:
+                newest_ts = int(result_list[0][0])
+                if newest_ts <= current_start:
                     # No progress, we've fetched all available data
                     break
-                # Move to after the oldest candle we got
-                # Since Bybit returns reverse chronological, paginate by moving end
-                # Actually, let's use the newest timestamp and move forward
-                newest_ts = int(result_list[0][0])
+                # Advance past the newest candle we received
                 current_start = newest_ts + _interval_to_ms(interval)
 
                 if len(result_list) < self.MAX_CANDLES_PER_REQUEST:
@@ -145,8 +142,14 @@ class BybitCollector:
                         rate=float(row["fundingRate"]),
                     ))
 
-                last_ts = int(result_list[0]["fundingRateTimestamp"])
-                current_start = last_ts + 1
+                # Bybit returns newest first, so last element has the oldest timestamp
+                oldest_ts = int(result_list[-1]["fundingRateTimestamp"])
+                if oldest_ts <= current_start:
+                    # No progress, we've fetched all available data
+                    break
+                # Advance past the newest entry in this batch
+                newest_ts = int(result_list[0]["fundingRateTimestamp"])
+                current_start = newest_ts + 1
 
                 if len(result_list) < 200:
                     break
