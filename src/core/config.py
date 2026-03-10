@@ -90,9 +90,22 @@ class AppConfig:
 
     @classmethod
     def from_env(cls) -> "AppConfig":
-        return cls(
+        config = cls(
             bybit=BybitConfig.from_env(),
             database=DatabaseConfig.from_env(),
             telegram=TelegramConfig.from_env(),
             trading=TradingConfig.from_env(),
         )
+
+        # Validate required credentials in live mode
+        if config.trading.mode == TradingMode.LIVE:
+            if not config.bybit.api_key:
+                raise ValueError(
+                    "BYBIT_API_KEY environment variable is required for live trading"
+                )
+            if not config.bybit.api_secret:
+                raise ValueError(
+                    "BYBIT_API_SECRET environment variable is required for live trading"
+                )
+
+        return config

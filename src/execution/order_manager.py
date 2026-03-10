@@ -6,6 +6,7 @@ All exchange interactions go through this module.
 """
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Protocol
 
@@ -33,6 +34,12 @@ class ExchangeOrderClient(Protocol):
     def cancel_order(self, category: str, symbol: str, orderId: str) -> dict: ...
 
     def get_positions(self, category: str, symbol: str) -> dict: ...
+
+    def set_leverage(
+        self, category: str, symbol: str, buyLeverage: str, sellLeverage: str,
+    ) -> dict: ...
+
+    def get_open_orders(self, category: str, symbol: str, orderId: str) -> dict: ...
 
 
 class OrderManager:
@@ -92,15 +99,19 @@ class OrderManager:
             return None
 
         try:
-            # Set leverage first
+            # Set leverage before placing the order
             try:
-                self.client.set_trading_stop(
+                self.client.set_leverage(
                     category="linear",
                     symbol=signal.symbol,
-                    stopLoss="",  # clear first
+                    buyLeverage=str(leverage),
+                    sellLeverage=str(leverage),
                 )
-            except Exception:
-                pass
+                logger.info(f"Set leverage {leverage}x for {signal.symbol}")
+            except Exception as e:
+                # Bybit returns an error if leverage is already set to the same value;
+                # that is safe to ignore.
+                logger.debug(f"set_leverage note for {signal.symbol}: {e}")
 
             # Place limit order
             response = self.client.place_order(
@@ -122,6 +133,10 @@ class OrderManager:
                 f"qty={quantity}, price={signal.entry_price}, "
                 f"order_id={order.exchange_order_id}"
             )
+
+            # Poll order status until filled, cancelled, or timeout
+            if order.exchange_order_id:
+                order = self._poll_order_status(order)
 
             return order
 
@@ -195,6 +210,68 @@ class OrderManager:
         except Exception as e:
             logger.error(f"Failed to close position for {position.symbol}: {e}")
             return False
+
+    def _poll_order_status(
+        self,
+        order: Order,
+        max_wait_seconds: int = 30,
+        poll_interval: float = 2.0,
+    ) -> Order:
+        """
+        Poll the exchange for order status until it is filled, cancelled, or
+        the timeout elapses.  Returns the updated Order.
+        """
+        if self.client is None or order.exchange_order_id is None:
+            return order
+
+        deadline = time.monotonic() + max_wait_seconds
+        while time.monotonic() < deadline:
+            try:
+                resp = self.client.get_open_orders(
+                    category="linear",
+                    symbol=order.symbol,
+                    orderId=order.exchange_order_id,
+                )
+                orders_list = resp.get("result", {}).get("list", [])
+
+                if not orders_list:
+                    # Order no longer in open-orders list → treat as filled
+                    order.status = OrderStatus.FILLED
+                    order.filled_at = datetime.now(timezone.utc)
+                    logger.info(
+                        f"Order {order.exchange_order_id} for {order.symbol} filled"
+                    )
+                    return order
+
+                exchange_status = orders_list[0].get("orderStatus", "").lower()
+                if exchange_status == "filled":
+                    order.status = OrderStatus.FILLED
+                    order.filled_at = datetime.now(timezone.utc)
+                    logger.info(
+                        f"Order {order.exchange_order_id} for {order.symbol} filled"
+                    )
+                    return order
+                elif exchange_status in ("cancelled", "rejected", "deactivated"):
+                    order.status = OrderStatus.REJECTED
+                    logger.warning(
+                        f"Order {order.exchange_order_id} for {order.symbol} "
+                        f"status: {exchange_status}"
+                    )
+                    return order
+
+            except Exception as e:
+                logger.warning(f"Error polling order status: {e}")
+
+            time.sleep(poll_interval)
+
+        # Timed out — order still open
+        logger.warning(
+            f"Order {order.exchange_order_id} for {order.symbol} still pending "
+            f"after {max_wait_seconds}s, cancelling"
+        )
+        self.cancel_order(order.symbol, order.exchange_order_id)
+        order.status = OrderStatus.REJECTED
+        return order
 
     def _paper_fill_order(self, order: Order, signal: Signal) -> Order:
         """Simulate order fill in paper trading mode."""

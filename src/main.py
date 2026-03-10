@@ -4,6 +4,7 @@ Main entry point: wires all layers together and runs the trading loop.
 
 import asyncio
 import logging
+import math
 import signal
 import sys
 from datetime import datetime, timezone, timedelta
@@ -11,7 +12,7 @@ from datetime import datetime, timezone, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from core.config import AppConfig
-from core.types import TradingMode, SignalAction
+from core.types import TradingMode, SignalAction, Position, Side
 from core.safety import REQUIRE_EXCHANGE_STOP_LOSS
 from data.collector import BybitCollector
 from data.validator import DataValidator
@@ -22,12 +23,13 @@ from strategy.trend_following import TrendFollowingStrategy
 from strategy.funding_rate import FundingRateStrategy
 from sizing.kelly import kelly_fraction, calculate_position_size
 from sizing.adjustments import apply_all_adjustments
+from sizing.ml_model import MLConfidenceModel, FeatureRow
 from execution.order_manager import OrderManager
 from execution.position_tracker import PositionTracker
 from execution.circuit_breaker import CircuitBreaker
 from review.trade_logger import TradeLogger
 from review.performance import calculate_metrics, calculate_strategy_attribution
-from review.reporter import Reporter
+from review.reporter import Reporter, TelegramBotSender
 from review.retrainer import Retrainer
 
 logging.basicConfig(
@@ -65,8 +67,14 @@ class TradingBot:
 
         # Review layer
         self.trade_logger = TradeLogger(self.storage)
-        self.reporter = Reporter(chat_id=config.telegram.chat_id)
+        tg_sender = (
+            TelegramBotSender(config.telegram.bot_token)
+            if config.telegram.bot_token
+            else None
+        )
+        self.reporter = Reporter(sender=tg_sender, chat_id=config.telegram.chat_id)
         self.retrainer = Retrainer()
+        self.ml_model = MLConfidenceModel()
 
         # State
         self._running = False
@@ -206,7 +214,7 @@ class TradingBot:
                     self.position_tracker.update_unrealized_pnl(symbol, current_price)
                     # Update trailing stop
                     atr = df_1h["atr"].iloc[-1]
-                    if not __import__("math").isnan(atr):
+                    if not math.isnan(atr):
                         self.position_tracker.update_trailing_stop(symbol, atr)
                     break
 
@@ -220,6 +228,11 @@ class TradingBot:
                     latest_funding = rates[-1].rate
             except Exception:
                 pass
+
+            # Extract ML feature row from current market state
+            feature_row = MLConfidenceModel.extract_features(
+                df_1h, funding_rate=latest_funding,
+            )
 
             # Generate signals from both strategies
             # Strategy A: Trend Following (70% allocation)
@@ -244,13 +257,14 @@ class TradingBot:
                 if signal.action == SignalAction.EXIT:
                     await self._execute_exit(symbol, df_1h["close"].iloc[-1])
                 elif signal.action in (SignalAction.ENTER_LONG, SignalAction.ENTER_SHORT):
-                    await self._execute_entry(signal, allocation, df_1h)
+                    await self._execute_entry(signal, allocation, df_1h, feature_row)
 
         except Exception as e:
             logger.error(f"Error processing {symbol}: {e}", exc_info=True)
 
     async def _execute_entry(
         self, signal, allocation: float, df_1h,
+        feature_row: FeatureRow | None = None,
     ) -> None:
         """Execute an entry signal."""
         if not self.position_tracker.can_open_position():
@@ -284,16 +298,22 @@ class TradingBot:
             leverage=self.config.trading.default_leverage,
         )
 
+        # Use ML model confidence if a feature row is available, else fall back to signal
+        if feature_row is not None:
+            ml_confidence = self.ml_model.predict_confidence(feature_row)
+        else:
+            ml_confidence = signal.confidence
+
         # Apply adjustments
         adjusted_quantity = apply_all_adjustments(
             base_size=base_quantity,
-            current_atr_pct=float(atr_pct) if not __import__("math").isnan(atr_pct) else 0.02,
+            current_atr_pct=float(atr_pct) if not math.isnan(atr_pct) else 0.02,
             existing_position_sides=existing_sides,
             new_signal_side=new_side,
             correlation_to_existing=0.7,  # conservative default
             current_mdd=state.current_mdd,
             consecutive_losses=state.consecutive_losses,
-            ml_confidence=signal.confidence,
+            ml_confidence=ml_confidence,
         )
 
         # Apply circuit breaker size multiplier
@@ -302,12 +322,19 @@ class TradingBot:
         if adjusted_quantity <= 0:
             return
 
+        # Look up actual 24h volume from pair selector
+        pair_volume_24h = 50_000_000.0  # fallback
+        for pair_info in self.pair_selector._current_pairs:
+            if pair_info.symbol == signal.symbol:
+                pair_volume_24h = pair_info.volume_24h
+                break
+
         # Place order
         order = self.order_manager.place_entry_order(
             signal=signal,
             quantity=adjusted_quantity,
             leverage=self.config.trading.default_leverage,
-            pair_volume_24h=50_000_000,  # TODO: get actual volume
+            pair_volume_24h=pair_volume_24h,
         )
 
         if order and order.status.value == "filled":
@@ -321,7 +348,6 @@ class TradingBot:
                 return
 
             # Track position
-            from core.types import Position, Side
             position = Position(
                 symbol=signal.symbol,
                 side=Side.LONG if signal.action == SignalAction.ENTER_LONG else Side.SHORT,
@@ -412,7 +438,75 @@ class TradingBot:
 
         # Check if retrain is needed
         if self.retrainer.should_retrain(self._last_retrain):
-            logger.info("Monthly retrain due — would trigger ML retrain here")
+            logger.info("Monthly retrain due — retraining ML confidence model")
+            historical_trades = self.storage.get_trades()
+
+            if len(historical_trades) >= self.retrainer.MIN_TRADES_FOR_RETRAIN:
+                # Reconstruct FeatureRows from trade metadata
+                feature_rows: list[FeatureRow] = []
+                predictions: list[float] = []
+                actuals: list[bool] = []
+
+                for trade in historical_trades:
+                    meta = trade.metadata or {}
+                    # Use stored features if available, otherwise build simplified row
+                    if "ml_features" in meta:
+                        f = meta["ml_features"]
+                        row = FeatureRow(
+                            atr_pct=f.get("atr_pct", 0.0),
+                            adx=f.get("adx", 0.0),
+                            rsi=f.get("rsi", 50.0),
+                            bb_width=f.get("bb_width", 0.0),
+                            volume_ratio=f.get("volume_ratio", 1.0),
+                            ema_20_slope=f.get("ema_20_slope", 0.0),
+                            ema_50_slope=f.get("ema_50_slope", 0.0),
+                            donchian_position=f.get("donchian_position", 0.5),
+                            funding_rate=f.get("funding_rate", 0.0),
+                            profitable=trade.pnl > 0,
+                        )
+                    else:
+                        # Simplified feature row from basic trade data
+                        row = FeatureRow(
+                            atr_pct=meta.get("atr_pct", 0.02),
+                            adx=meta.get("adx", 25.0),
+                            rsi=meta.get("rsi", 50.0),
+                            bb_width=meta.get("bb_width", 0.05),
+                            volume_ratio=meta.get("volume_ratio", 1.0),
+                            ema_20_slope=meta.get("ema_20_slope", 0.0),
+                            ema_50_slope=meta.get("ema_50_slope", 0.0),
+                            donchian_position=meta.get("donchian_position", 0.5),
+                            funding_rate=meta.get("funding_rate", 0.0),
+                            profitable=trade.pnl > 0,
+                        )
+                    feature_rows.append(row)
+
+                # Train the model
+                trained = self.ml_model.train(feature_rows)
+
+                if trained:
+                    # Evaluate: confidence > 1.0 means model predicts profitable
+                    for row in feature_rows:
+                        conf = self.ml_model.predict_confidence(row)
+                        # Map confidence back to 0/1: >1.0 = predicts profitable
+                        predictions.append(1.0 if conf > 1.0 else 0.0)
+                        actuals.append(row.profitable)
+
+                    accuracy, should_disable = self.retrainer.evaluate_ml_model(
+                        predictions, actuals,
+                    )
+                    if should_disable:
+                        self.ml_model.disable()
+                        logger.warning(f"ML model disabled after retrain: accuracy={accuracy:.1%}")
+                    else:
+                        logger.info(f"ML model retrained successfully: accuracy={accuracy:.1%}")
+                else:
+                    logger.info("ML model training skipped (insufficient data or single class)")
+            else:
+                logger.info(
+                    f"Skipping ML retrain: only {len(historical_trades)} trades "
+                    f"(need {self.retrainer.MIN_TRADES_FOR_RETRAIN})"
+                )
+
             self._last_retrain = datetime.now(timezone.utc)
 
         # Check allocation adjustment

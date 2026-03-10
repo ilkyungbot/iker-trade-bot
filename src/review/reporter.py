@@ -8,6 +8,13 @@ import logging
 from datetime import datetime
 from typing import Protocol
 
+try:
+    from telegram import Bot
+    from telegram.error import TelegramError
+    HAS_TELEGRAM = True
+except ImportError:
+    HAS_TELEGRAM = False
+
 from core.types import Trade, PortfolioState, Signal, SignalAction
 from review.performance import PerformanceMetrics
 
@@ -18,6 +25,21 @@ class TelegramSender(Protocol):
     """Protocol for sending Telegram messages."""
 
     async def send_message(self, chat_id: str, text: str, parse_mode: str = "HTML") -> None: ...
+
+
+class TelegramBotSender:
+    """Concrete TelegramSender using python-telegram-bot."""
+
+    def __init__(self, bot_token: str) -> None:
+        if not HAS_TELEGRAM:
+            raise ImportError("python-telegram-bot is required: pip install python-telegram-bot")
+        self._bot = Bot(token=bot_token)
+
+    async def send_message(self, chat_id: str, text: str, parse_mode: str = "HTML") -> None:
+        try:
+            await self._bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
+        except Exception as e:
+            logger.error(f"Telegram send error: {e}")
 
 
 class Reporter:
