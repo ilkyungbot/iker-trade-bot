@@ -1,7 +1,12 @@
 """Tests for Telegram reporter formatting."""
 
+import logging
 from datetime import datetime, timezone
-from review.reporter import Reporter
+from unittest.mock import AsyncMock, patch, MagicMock
+
+import pytest
+
+from review.reporter import Reporter, TelegramBotSender
 from review.performance import PerformanceMetrics
 from core.types import (
     Trade, Side, StrategyName, PortfolioState, CircuitBreakerState,
@@ -89,3 +94,135 @@ class TestWeeklyReport:
         assert "Weekly Report" in msg
         assert "trend_following" in msg
         assert "funding_rate" in msg
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: Reporter + TelegramSender
+# ---------------------------------------------------------------------------
+
+
+class TestReporterSendIntegration:
+    """Test that Reporter delegates to sender.send_message correctly."""
+
+    @pytest.mark.anyio
+    async def test_send_calls_sender_when_provided(self):
+        sender = AsyncMock()
+        reporter = Reporter(sender=sender, chat_id="12345")
+
+        await reporter.send_trade_alert(_make_trade())
+
+        sender.send_message.assert_awaited_once()
+        call_args = sender.send_message.call_args
+        assert call_args[0][0] == "12345"          # chat_id
+        assert "BTCUSDT" in call_args[0][1]        # text contains symbol
+        assert call_args[1]["parse_mode"] == "HTML" # keyword arg
+
+    @pytest.mark.anyio
+    async def test_send_logs_when_sender_is_none(self, caplog):
+        reporter = Reporter(sender=None, chat_id="")
+
+        with caplog.at_level(logging.INFO):
+            await reporter.send_trade_alert(_make_trade())
+
+        assert any("[NO TELEGRAM]" in r.message for r in caplog.records)
+
+    @pytest.mark.anyio
+    async def test_send_catches_sender_exception(self, caplog):
+        """_send must not propagate exceptions raised by the sender."""
+        sender = AsyncMock()
+        sender.send_message.side_effect = RuntimeError("network down")
+        reporter = Reporter(sender=sender, chat_id="12345")
+
+        with caplog.at_level(logging.ERROR):
+            await reporter.send_trade_alert(_make_trade())  # must not raise
+
+        assert any("Failed to send Telegram message" in r.message for r in caplog.records)
+
+    @pytest.mark.anyio
+    async def test_send_signal_alert_delegates(self):
+        sender = AsyncMock()
+        reporter = Reporter(sender=sender, chat_id="99")
+
+        signal = Signal(
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            symbol="ETHUSDT", action=SignalAction.ENTER_LONG,
+            strategy=StrategyName.TREND_FOLLOWING,
+            entry_price=3000, stop_loss=2900, take_profit=3200,
+            confidence=0.75,
+        )
+        await reporter.send_signal_alert(signal)
+
+        sender.send_message.assert_awaited_once()
+        text = sender.send_message.call_args[0][1]
+        assert "LONG" in text
+        assert "ETHUSDT" in text
+
+
+class TestSendAlert:
+    """Test the raw send_alert method formats correctly."""
+
+    @pytest.mark.anyio
+    async def test_send_alert_wraps_in_bold_alert_tag(self):
+        sender = AsyncMock()
+        reporter = Reporter(sender=sender, chat_id="1")
+
+        await reporter.send_alert("Circuit breaker tripped")
+
+        text = sender.send_message.call_args[0][1]
+        assert text.startswith("<b>ALERT</b>")
+        assert "Circuit breaker tripped" in text
+
+    @pytest.mark.anyio
+    async def test_send_alert_logs_when_no_sender(self, caplog):
+        reporter = Reporter(sender=None, chat_id="")
+        with caplog.at_level(logging.INFO):
+            await reporter.send_alert("test message")
+        assert any("[NO TELEGRAM]" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# TelegramBotSender unit tests (telegram lib mocked)
+# ---------------------------------------------------------------------------
+
+
+class TestTelegramBotSender:
+
+    @patch("review.reporter.HAS_TELEGRAM", False)
+    def test_raises_import_error_when_telegram_unavailable(self):
+        with pytest.raises(ImportError, match="python-telegram-bot is required"):
+            TelegramBotSender(bot_token="fake-token")
+
+    @patch("review.reporter.HAS_TELEGRAM", True)
+    @patch("review.reporter.Bot", create=True)
+    def test_creates_bot_with_token(self, mock_bot_cls):
+        sender = TelegramBotSender(bot_token="tok123")
+        mock_bot_cls.assert_called_once_with(token="tok123")
+
+    @pytest.mark.anyio
+    @patch("review.reporter.HAS_TELEGRAM", True)
+    @patch("review.reporter.Bot", create=True)
+    async def test_send_message_delegates_to_bot(self, mock_bot_cls):
+        mock_bot = MagicMock()
+        mock_bot.send_message = AsyncMock()
+        mock_bot_cls.return_value = mock_bot
+
+        sender = TelegramBotSender(bot_token="tok")
+        await sender.send_message("chat1", "hello", parse_mode="HTML")
+
+        mock_bot.send_message.assert_awaited_once_with(
+            chat_id="chat1", text="hello", parse_mode="HTML",
+        )
+
+    @pytest.mark.anyio
+    @patch("review.reporter.HAS_TELEGRAM", True)
+    @patch("review.reporter.Bot", create=True)
+    async def test_send_message_logs_on_exception(self, mock_bot_cls, caplog):
+        mock_bot = MagicMock()
+        mock_bot.send_message = AsyncMock(side_effect=Exception("timeout"))
+        mock_bot_cls.return_value = mock_bot
+
+        sender = TelegramBotSender(bot_token="tok")
+        with caplog.at_level(logging.ERROR):
+            await sender.send_message("chat1", "hi")  # must not raise
+
+        assert any("Telegram send error" in r.message for r in caplog.records)

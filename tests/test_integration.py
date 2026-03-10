@@ -252,3 +252,109 @@ class TestEndToEnd:
         )
         # With no penalties and ml_confidence > 1, final should be >= base
         assert final >= base * 0.9  # allow small rounding
+
+    def test_ml_confidence_used_in_sizing(self):
+        """When the ML model is trained, predict_confidence is called and affects sizing."""
+        from main import TradingBot
+
+        # Build a minimal AppConfig in paper mode
+        config = AppConfig(
+            bybit=BybitConfig(api_key="", api_secret="", testnet=True),
+            database=DatabaseConfig(url="sqlite:///:memory:"),
+            telegram=TelegramConfig(bot_token="", chat_id=""),
+            trading=TradingConfig(
+                mode=TradingMode.PAPER,
+                default_leverage=5.0,
+                strategy_a_allocation=0.70,
+                strategy_b_allocation=0.30,
+                max_pairs=5,
+                pair_rebalance_days=14,
+                candle_intervals=("15", "60", "240"),
+                primary_interval="60",
+                trend_interval="240",
+            ),
+        )
+
+        # Create bot with heavy mocking to avoid real IO
+        with patch("main.BybitCollector"), \
+             patch("main.Storage"), \
+             patch("main.OrderManager"), \
+             patch("main.Reporter"):
+            bot = TradingBot(config, initial_capital=100_000)
+
+        # Replace ML model with a mock that tracks calls
+        mock_ml = MagicMock(spec=MLConfidenceModel)
+        mock_ml.predict_confidence.return_value = 1.3  # high confidence
+        bot.ml_model = mock_ml
+
+        # Prepare a signal
+        signal = Signal(
+            timestamp=datetime.now(timezone.utc),
+            symbol="BTCUSDT",
+            action=SignalAction.ENTER_LONG,
+            strategy=StrategyName.TREND_FOLLOWING,
+            entry_price=50000.0,
+            stop_loss=49000.0,
+            take_profit=52000.0,
+            confidence=0.6,
+        )
+
+        # Build a minimal feature row
+        feature_row = FeatureRow(
+            atr_pct=0.02, adx=30.0, rsi=55.0, bb_width=0.04,
+            volume_ratio=1.2, ema_20_slope=0.001, ema_50_slope=0.0005,
+            donchian_position=0.6, funding_rate=0.0001,
+        )
+
+        # Build a tiny df_1h with required columns
+        df_1h = pd.DataFrame({
+            "close": [50000.0],
+            "atr_pct": [0.02],
+        })
+
+        # Mock storage.get_trades and position_tracker to allow entry
+        bot.storage = MagicMock()
+        bot.storage.get_trades.return_value = []
+        bot.position_tracker = MagicMock(spec=PositionTracker)
+        bot.position_tracker.can_open_position.return_value = True
+        bot.position_tracker.state = PortfolioState(
+            total_capital=100_000,
+            available_capital=90_000,
+            positions=[],
+            current_mdd=0.0,
+            consecutive_losses=0,
+        )
+        bot.order_manager = MagicMock()
+        bot.order_manager.place_entry_order.return_value = None  # order not filled
+
+        bot.circuit_breaker = MagicMock()
+        bot.circuit_breaker.size_multiplier = 1.0
+
+        bot.pair_selector = MagicMock()
+        bot.pair_selector._current_pairs = []
+
+        # Execute entry
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(
+                bot._execute_entry(signal, 0.70, df_1h, feature_row)
+            )
+        finally:
+            loop.close()
+
+        # The key assertion: predict_confidence was called with our feature_row
+        mock_ml.predict_confidence.assert_called_once_with(feature_row)
+
+    def test_config_validation_live_mode(self):
+        """Live mode without API keys must raise ValueError."""
+        import os
+        from unittest.mock import patch as mock_patch
+
+        env = {
+            "PAPER_TRADING": "false",
+            "BYBIT_API_KEY": "",
+            "BYBIT_API_SECRET": "",
+        }
+        with mock_patch.dict(os.environ, env, clear=False):
+            with pytest.raises(ValueError, match="BYBIT_API_KEY"):
+                AppConfig.from_env()
