@@ -3,7 +3,7 @@ Core type definitions used across all layers.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -145,7 +145,7 @@ class Order:
     status: OrderStatus = OrderStatus.PENDING
     order_id: str | None = None
     exchange_order_id: str | None = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     filled_at: datetime | None = None
     cancel_after_candles: int = 2  # cancel limit order after N candles
 
