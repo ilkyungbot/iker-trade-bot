@@ -13,7 +13,7 @@ RUN apt-get update && \
 COPY pyproject.toml .
 COPY src/ src/
 
-RUN pip install --no-cache-dir -e . && \
+RUN pip install --no-cache-dir . && \
     apt-get purge -y gcc g++ make wget && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
