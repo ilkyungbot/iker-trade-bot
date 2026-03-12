@@ -49,7 +49,7 @@ class DataValidator:
 
         gaps = self._find_gaps(candles, interval)
         anomalies = self._find_anomalies(candles)
-        is_stale, stale_seconds = self._check_staleness(candles, now)
+        is_stale, stale_seconds = self._check_staleness(candles, now, interval)
 
         # Separate critical anomalies (data corruption) from warnings (price moves)
         critical = [a for a in anomalies if "Non-positive" in a[1] or "High" in a[1] or "Low" in a[1]]
@@ -164,8 +164,14 @@ class DataValidator:
         self,
         candles: list[Candle],
         now: datetime | None = None,
+        interval: str = "60",
     ) -> tuple[bool, float]:
-        """Check if the most recent candle is too old."""
+        """Check if the most recent candle is too old.
+
+        The staleness threshold accounts for the candle interval: e.g. for 1H
+        candles the latest *completed* candle can be up to 1 interval behind,
+        so the effective threshold is MAX_DATA_STALENESS_SECONDS + interval.
+        """
         if now is None:
             now = datetime.now(timezone.utc)
 
@@ -176,6 +182,8 @@ class DataValidator:
             now = now.replace(tzinfo=timezone.utc)
 
         diff_seconds = (now - latest).total_seconds()
-        is_stale = diff_seconds > MAX_DATA_STALENESS_SECONDS
+        interval_seconds = _interval_to_ms(interval) / 1000.0
+        effective_threshold = MAX_DATA_STALENESS_SECONDS + interval_seconds
+        is_stale = diff_seconds > effective_threshold
 
         return is_stale, diff_seconds
