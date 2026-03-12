@@ -1,7 +1,8 @@
 """
 Telegram command handler — responds to user commands in Korean.
 
-Commands: /상태, /포지션, /성과, /오늘, /중지, /재개, /페어
+Supports both slash commands (/status, /help) and Korean text messages
+(상태, 포지션, 성과, 오늘, 중지, 재개, 페어).
 """
 
 from __future__ import annotations
@@ -11,7 +12,9 @@ from datetime import datetime, timezone, timedelta
 
 try:
     from telegram import Update
-    from telegram.ext import Application, CommandHandler, ContextTypes
+    from telegram.ext import (
+        Application, CommandHandler, MessageHandler, ContextTypes, filters,
+    )
     HAS_TELEGRAM = True
 except ImportError:
     HAS_TELEGRAM = False
@@ -20,6 +23,18 @@ from core.types import CircuitBreakerState
 from review.reporter import _strategy_kr, _cb_state_kr, _side_kr, _sign
 
 logger = logging.getLogger(__name__)
+
+# Korean text → handler method name mapping
+_KR_COMMANDS: dict[str, str] = {
+    "상태": "_cmd_status",
+    "포지션": "_cmd_positions",
+    "성과": "_cmd_performance",
+    "오늘": "_cmd_today",
+    "중지": "_cmd_stop",
+    "재개": "_cmd_resume",
+    "페어": "_cmd_pairs",
+    "도움말": "_cmd_help",
+}
 
 
 class TelegramCommandHandler:
@@ -45,15 +60,21 @@ class TelegramCommandHandler:
 
         self._app = Application.builder().token(self.bot_token).build()
 
-        self._app.add_handler(CommandHandler("상태", self._cmd_status))
-        self._app.add_handler(CommandHandler("포지션", self._cmd_positions))
-        self._app.add_handler(CommandHandler("성과", self._cmd_performance))
-        self._app.add_handler(CommandHandler("오늘", self._cmd_today))
-        self._app.add_handler(CommandHandler("중지", self._cmd_stop))
-        self._app.add_handler(CommandHandler("재개", self._cmd_resume))
-        self._app.add_handler(CommandHandler("페어", self._cmd_pairs))
+        # English slash commands
+        self._app.add_handler(CommandHandler("status", self._cmd_status))
+        self._app.add_handler(CommandHandler("positions", self._cmd_positions))
+        self._app.add_handler(CommandHandler("performance", self._cmd_performance))
+        self._app.add_handler(CommandHandler("today", self._cmd_today))
+        self._app.add_handler(CommandHandler("stop", self._cmd_stop))
+        self._app.add_handler(CommandHandler("resume", self._cmd_resume))
+        self._app.add_handler(CommandHandler("pairs", self._cmd_pairs))
         self._app.add_handler(CommandHandler("help", self._cmd_help))
         self._app.add_handler(CommandHandler("start", self._cmd_help))
+
+        # Korean text message routing
+        self._app.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND, self._route_korean,
+        ))
 
         await self._app.initialize()
         await self._app.start()
@@ -72,18 +93,32 @@ class TelegramCommandHandler:
             return True
         return str(update.effective_chat.id) == self.chat_id
 
+    async def _route_korean(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Route plain Korean text to the appropriate command handler."""
+        if not self._check_auth(update):
+            return
+        text = (update.message.text or "").strip()
+        method_name = _KR_COMMANDS.get(text)
+        if method_name:
+            handler = getattr(self, method_name)
+            await handler(update, context)
+
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._check_auth(update):
             return
         msg = (
             "<b>\U0001f916 트레이딩봇 명령어</b>\n\n"
-            "/상태 — 현재 자본금, 포지션, MDD\n"
-            "/포지션 — 보유 포지션 상세\n"
-            "/성과 — 누적 거래 성과\n"
-            "/오늘 — 오늘 손익 및 거래 내역\n"
-            "/페어 — 현재 트레이딩 페어\n"
-            "/중지 — 트레이딩 일시정지\n"
-            "/재개 — 트레이딩 재개"
+            "<b>한글 입력</b>\n"
+            "상태 \u2014 현재 자본금, 포지션, MDD\n"
+            "포지션 \u2014 보유 포지션 상세\n"
+            "성과 \u2014 누적 거래 성과\n"
+            "오늘 \u2014 오늘 손익 및 거래 내역\n"
+            "페어 \u2014 현재 트레이딩 페어\n"
+            "중지 \u2014 트레이딩 일시정지\n"
+            "재개 \u2014 트레이딩 재개\n\n"
+            "<b>슬래시 명령어</b>\n"
+            "/status /positions /performance\n"
+            "/today /pairs /stop /resume"
         )
         await update.message.reply_text(msg, parse_mode="HTML")
 
@@ -206,7 +241,7 @@ class TelegramCommandHandler:
         logger.warning("Trading manually halted via Telegram command")
         await update.message.reply_text(
             "\u26d4 <b>트레이딩이 중지되었습니다.</b>\n"
-            "재개하려면 /재개 명령을 보내세요.",
+            "재개하려면 '재개' 또는 /resume 을 보내세요.",
             parse_mode="HTML",
         )
 
