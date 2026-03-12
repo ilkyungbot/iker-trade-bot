@@ -104,8 +104,14 @@ class BybitCollector:
                 logger.error(f"Error fetching candles for {symbol}: {e}")
                 raise
 
-        # Sort by timestamp ascending
+        # Sort by timestamp ascending and deduplicate
         all_candles.sort(key=lambda c: c.timestamp)
+        if all_candles:
+            deduped = [all_candles[0]]
+            for c in all_candles[1:]:
+                if c.timestamp != deduped[-1].timestamp:
+                    deduped.append(c)
+            all_candles = deduped
         return all_candles
 
     def get_funding_rates(

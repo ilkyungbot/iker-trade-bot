@@ -28,7 +28,8 @@ class ValidationResult:
 class DataValidator:
     """Validates market data quality before it's used by strategies."""
 
-    PRICE_ANOMALY_THRESHOLD = 0.20  # 20% price change in one candle
+    PRICE_ANOMALY_THRESHOLD = 0.50  # 50% price change in one candle (critical)
+    MAX_ANOMALY_RATIO = 0.10  # Allow up to 10% anomalous candles
 
     def validate_candles(
         self,
@@ -50,12 +51,21 @@ class DataValidator:
         anomalies = self._find_anomalies(candles)
         is_stale, stale_seconds = self._check_staleness(candles, now)
 
-        is_valid = len(gaps) == 0 and len(anomalies) == 0 and not is_stale
+        # Separate critical anomalies (data corruption) from warnings (price moves)
+        critical = [a for a in anomalies if "Non-positive" in a[1] or "High" in a[1] or "Low" in a[1]]
+        anomaly_ratio = len(anomalies) / len(candles) if candles else 1.0
+
+        # Only invalidate on: critical anomalies, excessive anomaly ratio, or stale data
+        is_valid = (
+            len(critical) == 0
+            and anomaly_ratio <= self.MAX_ANOMALY_RATIO
+            and not is_stale
+        )
 
         if gaps:
-            logger.warning(f"Found {len(gaps)} gaps in {candles[0].symbol} {interval} data")
+            logger.info(f"Found {len(gaps)} gaps in {candles[0].symbol} {interval} data")
         if anomalies:
-            logger.warning(f"Found {len(anomalies)} anomalies in {candles[0].symbol} data")
+            logger.warning(f"Found {len(anomalies)} anomalies in {candles[0].symbol} data ({anomaly_ratio:.1%})")
         if is_stale:
             logger.warning(f"Data is stale by {stale_seconds:.0f}s for {candles[0].symbol}")
 

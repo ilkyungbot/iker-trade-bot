@@ -82,7 +82,7 @@ class TestAnomalyDetection:
         candles = [
             _make_candle(
                 ts=datetime(2024, 1, 1, tzinfo=timezone.utc),
-                open_=100.0, high=130.0, low=95.0, close=125.0,  # 25% body
+                open_=100.0, high=160.0, low=95.0, close=155.0,  # 55% body > 50% threshold
             ),
         ]
         result = v.validate_candles(candles, interval="60",
@@ -106,7 +106,7 @@ class TestAnomalyDetection:
         start = datetime(2024, 1, 1, tzinfo=timezone.utc)
         candles = [
             _make_candle(ts=start, close=100.0),
-            _make_candle(ts=start + timedelta(hours=1), open_=125.0, high=130.0, low=124.0, close=126.0),
+            _make_candle(ts=start + timedelta(hours=1), open_=155.0, high=160.0, low=154.0, close=156.0),  # 55% gap
         ]
         result = v.validate_candles(candles, interval="60",
                                      now=start + timedelta(hours=1, minutes=5))
@@ -144,7 +144,8 @@ class TestOverallValidity:
         result = v.validate_candles(candles, interval="60", now=now)
         assert result.is_valid is True
 
-    def test_gap_makes_invalid(self):
+    def test_gap_alone_does_not_invalidate(self):
+        """Gaps alone don't invalidate - only critical anomalies or high anomaly ratio do."""
         v = DataValidator()
         start = datetime(2024, 1, 1, tzinfo=timezone.utc)
         candles = [
@@ -153,4 +154,19 @@ class TestOverallValidity:
         ]
         result = v.validate_candles(candles, interval="60",
                                      now=start + timedelta(hours=3, minutes=5))
+        assert len(result.gaps) == 1
+        assert result.is_valid is True  # gaps are tolerated
+
+    def test_critical_anomaly_makes_invalid(self):
+        """Critical anomalies (zero price, high<low) invalidate data."""
+        v = DataValidator()
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        candles = _make_hourly_candles(start, 5)
+        # Replace one candle with a corrupted one (high < low)
+        candles[2] = _make_candle(
+            ts=start + timedelta(hours=2),
+            open_=100.0, high=95.0, low=105.0, close=100.0,
+        )
+        result = v.validate_candles(candles, interval="60",
+                                     now=start + timedelta(hours=4, minutes=5))
         assert result.is_valid is False
