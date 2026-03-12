@@ -279,7 +279,8 @@ class TestEndToEnd:
         with patch("main.BybitCollector"), \
              patch("main.Storage"), \
              patch("main.OrderManager"), \
-             patch("main.Reporter"):
+             patch("main.Reporter"), \
+             patch("main.TelegramCommandHandler"):
             bot = TradingBot(config, initial_capital=100_000)
 
         # Replace ML model with a mock that tracks calls

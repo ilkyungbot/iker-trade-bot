@@ -1,4 +1,4 @@
-"""Extra tests for reporter — gap coverage."""
+"""Extra tests for reporter — gap coverage (Korean)."""
 
 from datetime import datetime, timezone
 
@@ -25,9 +25,9 @@ class TestFormatSignalAlertExit:
 
         result = reporter.format_signal_alert(signal)
         assert isinstance(result, str)
-        assert "EXIT" in result
+        assert "청산 시그널" in result
         assert "BTCUSDT" in result
         assert "85%" in result
-        # Should NOT contain SL/TP lines
-        assert "SL:" not in result
-        assert "TP:" not in result
+        # Should NOT contain entry/SL/TP lines
+        assert "진입가:" not in result
+        assert "손절가:" not in result

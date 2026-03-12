@@ -40,7 +40,8 @@ def _make_bot():
     with patch("main.BybitCollector"), \
          patch("main.Storage"), \
          patch("main.OrderManager"), \
-         patch("main.Reporter"):
+         patch("main.Reporter"), \
+         patch("main.TelegramCommandHandler"):
         bot = TradingBot(_make_config(), initial_capital=100_000)
 
     bot.storage = MagicMock()
@@ -228,8 +229,8 @@ class TestHeartbeat:
 
         bot.reporter.send_alert.assert_called_once()
         msg = bot.reporter.send_alert.call_args[0][0]
-        assert "Heartbeat" in msg
-        assert "Capital" in msg
+        assert "상태 체크" in msg
+        assert "자본금" in msg
 
 
 class TestDailyTradesToday:

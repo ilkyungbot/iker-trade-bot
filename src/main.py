@@ -30,8 +30,9 @@ from execution.position_tracker import PositionTracker
 from execution.circuit_breaker import CircuitBreaker
 from review.trade_logger import TradeLogger
 from review.performance import calculate_metrics, calculate_strategy_attribution
-from review.reporter import Reporter, TelegramBotSender
+from review.reporter import Reporter, TelegramBotSender, _cb_state_kr
 from review.retrainer import Retrainer
+from review.telegram_commands import TelegramCommandHandler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,6 +78,13 @@ class TradingBot:
         self.retrainer = Retrainer()
         self.ml_model = MLConfidenceModel()
 
+        # Telegram command handler
+        self.cmd_handler = TelegramCommandHandler(
+            bot_token=config.telegram.bot_token,
+            chat_id=config.telegram.chat_id,
+        )
+        self.cmd_handler.attach_bot(self)
+
         # State
         self._running = False
         self._last_retrain: datetime | None = None
@@ -107,6 +115,9 @@ class TradingBot:
 
         scheduler.start()
 
+        # Start Telegram command listener
+        await self.cmd_handler.start()
+
         logger.info("Scheduler started. Waiting for trading cycles...")
 
         # Run initial trading cycle
@@ -119,6 +130,7 @@ class TradingBot:
         except (KeyboardInterrupt, SystemExit):
             logger.info("Shutting down...")
         finally:
+            await self.cmd_handler.stop()
             scheduler.shutdown()
             logger.info("Scheduler stopped.")
 
@@ -596,11 +608,13 @@ class TradingBot:
     async def heartbeat(self) -> None:
         """Send periodic health check via log and Telegram."""
         state = self.position_tracker.state
+        cb = _cb_state_kr(state.circuit_breaker_state)
         msg = (
-            f"Heartbeat: Capital={state.total_capital:,.0f} "
-            f"Positions={state.position_count} "
-            f"MDD={state.current_mdd:.1%} "
-            f"CB={state.circuit_breaker_state.value}"
+            f"\U0001f493 상태 체크\n"
+            f"자본금: {state.total_capital:,.0f} USDT\n"
+            f"포지션: {state.position_count}개\n"
+            f"최대낙폭: {state.current_mdd:.1%}\n"
+            f"서킷브레이커: {cb}"
         )
         logger.info(msg)
         await self.reporter.send_alert(msg)

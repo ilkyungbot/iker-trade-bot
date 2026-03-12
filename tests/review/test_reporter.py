@@ -1,4 +1,4 @@
-"""Tests for Telegram reporter formatting."""
+"""Tests for Telegram reporter formatting (Korean)."""
 
 import logging
 from datetime import datetime, timezone
@@ -41,12 +41,22 @@ class TestTradeAlert:
         msg = reporter.format_trade_alert(_make_trade(pnl=100))
         assert "BTCUSDT" in msg
         assert "+100" in msg
-        assert "LONG" in msg
+        assert "롱" in msg
+        assert "포지션 청산" in msg
+        assert "추세추종" in msg
 
     def test_format_losing_trade(self):
         reporter = Reporter()
         msg = reporter.format_trade_alert(_make_trade(pnl=-50))
         assert "-50" in msg
+        assert "손절" not in msg  # stop_loss_hit=False
+
+    def test_format_stop_loss_hit(self):
+        reporter = Reporter()
+        trade = _make_trade(pnl=-50)
+        trade = Trade(**{**trade.__dict__, "stop_loss_hit": True})
+        msg = reporter.format_trade_alert(trade)
+        assert "손절" in msg
 
 
 class TestSignalAlert:
@@ -60,8 +70,22 @@ class TestSignalAlert:
             confidence=0.8,
         )
         msg = reporter.format_signal_alert(signal)
-        assert "LONG" in msg
+        assert "롱" in msg
         assert "80%" in msg
+        assert "진입 시그널" in msg
+
+    def test_format_short_signal(self):
+        reporter = Reporter()
+        signal = Signal(
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            symbol="ETHUSDT", action=SignalAction.ENTER_SHORT,
+            strategy=StrategyName.FUNDING_RATE,
+            entry_price=3000, stop_loss=3100, take_profit=2800,
+            confidence=0.6,
+        )
+        msg = reporter.format_signal_alert(signal)
+        assert "숏" in msg
+        assert "펀딩레이트" in msg
 
 
 class TestDailyReport:
@@ -74,9 +98,10 @@ class TestDailyReport:
         msg = reporter.format_daily_report(
             state, _make_metrics(), datetime(2024, 1, 1),
         )
-        assert "Daily Report" in msg
+        assert "일간 리포트" in msg
         assert "1,050,000" in msg
         assert "+5,000" in msg
+        assert "승률" in msg
 
 
 class TestWeeklyReport:
@@ -91,9 +116,9 @@ class TestWeeklyReport:
             "funding_rate": _make_metrics(),
         }
         msg = reporter.format_weekly_report(state, _make_metrics(), strategy_attrs)
-        assert "Weekly Report" in msg
-        assert "trend_following" in msg
-        assert "funding_rate" in msg
+        assert "주간 리포트" in msg
+        assert "추세추종" in msg
+        assert "펀딩레이트" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +179,7 @@ class TestReporterSendIntegration:
 
         sender.send_message.assert_awaited_once()
         text = sender.send_message.call_args[0][1]
-        assert "LONG" in text
+        assert "롱" in text
         assert "ETHUSDT" in text
 
 
@@ -162,14 +187,14 @@ class TestSendAlert:
     """Test the raw send_alert method formats correctly."""
 
     @pytest.mark.anyio
-    async def test_send_alert_wraps_in_bold_alert_tag(self):
+    async def test_send_alert_wraps_in_korean_prefix(self):
         sender = AsyncMock()
         reporter = Reporter(sender=sender, chat_id="1")
 
         await reporter.send_alert("Circuit breaker tripped")
 
         text = sender.send_message.call_args[0][1]
-        assert text.startswith("<b>ALERT</b>")
+        assert "긴급 알림" in text
         assert "Circuit breaker tripped" in text
 
     @pytest.mark.anyio
