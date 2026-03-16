@@ -30,6 +30,7 @@ _KR_COMMANDS: dict[str, str] = {
     "패스": "_cmd_pass",
     "홀딩": "_cmd_hold",
     "상태": "_cmd_status",
+    "현황": "_cmd_briefing",
     "성과": "_cmd_performance",
     "도움말": "_cmd_help",
 }
@@ -226,6 +227,22 @@ class TelegramCommandHandler:
         else:
             await update.message.reply_text("현재 청산 시그널 대기 상태가 아닙니다.")
 
+    async def _cmd_briefing(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """현황 — 즉시 시장 브리핑."""
+        if not self._check_auth(update):
+            return
+        bot = self._bot_ref
+        if not bot:
+            await update.message.reply_text("봇이 초기화되지 않았습니다.")
+            return
+        await update.message.reply_text("\U0001f50d 시장 스캔 중...")
+        try:
+            briefing = await bot.generate_briefing()
+            text = bot.reporter.format_hourly_briefing(briefing)
+            await update.message.reply_text(text, parse_mode="HTML")
+        except Exception as e:
+            await update.message.reply_text(f"브리핑 생성 실패: {e}")
+
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._check_auth(update):
             return
@@ -281,6 +298,7 @@ class TelegramCommandHandler:
             "팔았다 \u2014 포지션 청산 확인\n"
             "패스 \u2014 시그널 스킵\n"
             "홀딩 \u2014 계속 보유\n"
+            "현황 \u2014 시장 브리핑 (즉시)\n"
             "상태 \u2014 현재 봇 상태\n"
             "성과 \u2014 시그널 정확도\n"
             "도움말 \u2014 이 메시지\n\n"

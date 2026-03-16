@@ -11,7 +11,19 @@ import signal
 import sys
 from datetime import datetime, timezone, timedelta
 
+import numpy as np
+import pandas as pd
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+
+def pandas_isna(val) -> bool:
+    """Null check that handles both pandas NA and numpy NaN."""
+    if val is None:
+        return True
+    try:
+        return pd.isna(val)
+    except (TypeError, ValueError):
+        return False
 
 from core.config import AppConfig
 from core.types import ConversationState, SignalAction, SignalQuality
@@ -87,6 +99,9 @@ class SignalBot:
 
         # 시그널 사이클: 매 4시간 (4H 봉 마감 시)
         scheduler.add_job(self.signal_cycle, "cron", hour="0,4,8,12,16,20", minute=1)
+
+        # 1시간 브리핑: 매시 정각
+        scheduler.add_job(self.hourly_briefing, "cron", minute=0)
 
         # 포지션 모니터링: 매 15분 (사용자가 포지션 중일 때만)
         scheduler.add_job(self.monitor_position, "cron", minute="*/15")
@@ -166,6 +181,214 @@ class SignalBot:
             logger.error(f"Error in signal cycle: {e}", exc_info=True)
             if self.cooldown.record_api_error():
                 await self.reporter.send_alert(f"API 에러 임계값 초과: {e}")
+
+    async def hourly_briefing(self) -> None:
+        """1시간 브리핑 발송."""
+        try:
+            briefing = await self.generate_briefing()
+            await self.reporter.send_hourly_briefing(briefing)
+        except Exception as e:
+            logger.error(f"Error in hourly briefing: {e}", exc_info=True)
+
+    async def generate_briefing(self) -> dict:
+        """시장 브리핑 데이터 생성 (스케줄러 + 온디맨드 공용)."""
+        now = datetime.now(timezone.utc)
+        briefing: dict = {
+            "time": now.strftime("%m/%d %H:%M UTC"),
+            "market_summary": {},
+            "scored_coins": [],
+            "funding_alerts": [],
+            "watched_pairs": [],
+        }
+
+        # 1. 티커 가져오기
+        tickers = await self._run_sync(self.collector.get_all_usdt_perpetuals)
+        top_tickers = tickers[:20]
+
+        # 2. 주요 코인 현황 (상위 10개)
+        top_coins = []
+        for t in top_tickers[:10]:
+            symbol = t["symbol"]
+            try:
+                candles = await self._run_sync(
+                    self.collector.get_candles,
+                    symbol, "240",
+                    start_time=now - timedelta(hours=8),
+                )
+                change_4h = 0.0
+                if candles and len(candles) >= 2:
+                    prev_close = candles[-2].close
+                    curr_close = candles[-1].close
+                    change_4h = (curr_close - prev_close) / prev_close * 100 if prev_close > 0 else 0
+
+                top_coins.append({
+                    "symbol": symbol,
+                    "price": t["last_price"],
+                    "change_4h": round(change_4h, 2),
+                    "volume_24h": t["volume_24h"],
+                })
+            except Exception as e:
+                logger.debug(f"Briefing ticker error {symbol}: {e}")
+
+        briefing["market_summary"]["top_coins"] = top_coins
+
+        # 3. 스코어링 스캔 (상위 20개 코인)
+        scored_coins = []
+        for t in top_tickers:
+            symbol = t["symbol"]
+            try:
+                candles = await self._run_sync(
+                    self.collector.get_candles,
+                    symbol, self.config.signal.primary_interval,
+                    start_time=now - timedelta(days=120),
+                )
+                if not candles or len(candles) < 55:
+                    continue
+
+                df = candles_to_dataframe(candles)
+                df = add_all_features(df)
+
+                # Trend Following 스코어 계산 (시그널 안 나와도 점수 추출)
+                result = self._score_pair(df, symbol)
+                if result and result["score"] >= 1:
+                    scored_coins.append(result)
+
+            except Exception as e:
+                logger.debug(f"Briefing score error {symbol}: {e}")
+
+        scored_coins.sort(key=lambda x: x["score"], reverse=True)
+        briefing["scored_coins"] = scored_coins
+
+        # 4. 펀딩비 이상 스캔
+        funding_alerts = []
+        for t in top_tickers[:15]:
+            symbol = t["symbol"]
+            try:
+                rates = await self._run_sync(
+                    self.collector.get_funding_rates,
+                    symbol, start_time=now - timedelta(hours=24),
+                )
+                if rates:
+                    latest = rates[-1].rate
+                    if abs(latest) >= 0.0005:  # 0.05% 이상이면 주의
+                        funding_alerts.append({
+                            "symbol": symbol,
+                            "rate": latest,
+                        })
+            except Exception:
+                pass
+
+        funding_alerts.sort(key=lambda x: abs(x["rate"]), reverse=True)
+        briefing["funding_alerts"] = funding_alerts
+
+        # 5. 현재 관찰 페어
+        briefing["watched_pairs"] = [p.symbol for p in self.pair_selector._current_pairs]
+
+        return briefing
+
+    def _score_pair(self, df, symbol: str) -> dict | None:
+        """단일 페어의 롱/숏 스코어를 점수만 추출 (시그널 미발생도 포함)."""
+        if len(df) < 55:
+            return None
+
+        current = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        close = current.get("close")
+        atr = current.get("atr")
+        adx = current.get("adx")
+
+        if close is None or atr is None or pandas_isna(close) or pandas_isna(atr) or atr <= 0:
+            return None
+
+        long_score = 0
+        short_score = 0
+        long_reasons: list[str] = []
+        short_reasons: list[str] = []
+
+        # 1. EMA 크로스오버
+        if current.get("ema_golden_cross", False):
+            long_score += 1
+            long_reasons.append("EMA 골든크로스")
+        if current.get("ema_death_cross", False):
+            short_score += 1
+            short_reasons.append("EMA 데드크로스")
+
+        # 2. RSI 시그널
+        if current.get("rsi_cross_up", False):
+            long_score += 1
+            long_reasons.append(f"RSI 상향돌파 ({current.get('rsi', 0):.0f})")
+        if current.get("rsi_cross_down", False):
+            short_score += 1
+            short_reasons.append(f"RSI 하향돌파 ({current.get('rsi', 0):.0f})")
+
+        # 3. 볼린저밴드
+        bb_lower = current.get("bb_lower", np.nan)
+        bb_upper = current.get("bb_upper", np.nan)
+        prev_close = prev.get("close", np.nan)
+        if not pandas_isna(bb_lower) and not pandas_isna(prev.get("low", np.nan)):
+            if prev.get("low", np.nan) <= bb_lower and close > prev_close:
+                long_score += 1
+                long_reasons.append("볼린저 하단 반등")
+        if not pandas_isna(bb_upper) and not pandas_isna(prev.get("high", np.nan)):
+            if prev.get("high", np.nan) >= bb_upper and close < prev_close:
+                short_score += 1
+                short_reasons.append("볼린저 상단 하락")
+
+        # 4. MACD
+        if current.get("macd_hist_cross_up", False):
+            long_score += 1
+            long_reasons.append("MACD 양전환")
+        if current.get("macd_hist_cross_down", False):
+            short_score += 1
+            short_reasons.append("MACD 음전환")
+
+        # 5. 거래량 이상치
+        if current.get("volume_anomaly", False):
+            if close > current.get("open", close):
+                long_score += 1
+                long_reasons.append(f"거래량 급증 (상승)")
+            elif close < current.get("open", close):
+                short_score += 1
+                short_reasons.append(f"거래량 급증 (하락)")
+
+        # 6. 캔들 패턴
+        if current.get("candle_hammer", False) or current.get("candle_bullish_engulfing", False) or current.get("candle_morning_star", False):
+            long_score += 1
+            long_reasons.append("강세 캔들패턴")
+        if current.get("candle_inverted_hammer", False) or current.get("candle_bearish_engulfing", False):
+            short_score += 1
+            short_reasons.append("약세 캔들패턴")
+
+        # 7. ADX
+        if not pandas_isna(adx) and adx > 20:
+            long_score += 1
+            short_score += 1
+            long_reasons.append(f"ADX {adx:.0f}")
+            short_reasons.append(f"ADX {adx:.0f}")
+
+        max_score = max(long_score, short_score)
+        if max_score < 1:
+            return None
+
+        if long_score >= short_score:
+            direction = "long"
+            score = long_score
+            reasons = long_reasons
+        else:
+            direction = "short"
+            score = short_score
+            reasons = short_reasons
+
+        quality = "strong" if score >= 3 else "moderate" if score >= 2 else "weak"
+
+        return {
+            "symbol": symbol,
+            "direction": direction,
+            "score": score,
+            "quality": quality,
+            "reasons": reasons,
+        }
 
     async def monitor_position(self) -> None:
         """모니터링 중인 포지션 업데이트."""
