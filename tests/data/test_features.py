@@ -14,6 +14,12 @@ from data.features import (
     add_volume_sma,
     add_all_features,
     candles_to_dataframe,
+    add_ema_crossover,
+    add_rsi_signal,
+    add_macd,
+    add_sideways_filter,
+    add_candle_patterns,
+    add_volume_anomaly,
 )
 from datetime import datetime, timezone, timedelta
 from core.types import Candle
@@ -58,7 +64,7 @@ class TestATRPercent:
         df = add_atr_percent(_make_df())
         valid = df["atr_pct"].dropna()
         assert (valid > 0).all()
-        assert (valid < 1).all()  # should be well under 100%
+        assert (valid < 1).all()
 
 
 class TestADX:
@@ -82,9 +88,8 @@ class TestEMA:
 
     def test_ema_tracks_price(self):
         df = add_ema(_make_df(), period=5)
-        # EMA should be close to price
         diff = (df["ema_5"] - df["close"]).abs().dropna()
-        assert diff.mean() < 5.0  # within a few dollars
+        assert diff.mean() < 5.0
 
 
 class TestEMASlope:
@@ -144,6 +149,141 @@ class TestVolumeSMA:
         assert "volume_ratio" in df.columns
 
 
+# --- Phase 1 신규 지표 테스트 ---
+
+
+class TestEMACrossover:
+    def test_columns_added(self):
+        df = _make_df()
+        df = add_ema(df, 20)
+        df = add_ema(df, 50)
+        df = add_ema_crossover(df, 20, 50)
+        assert "ema_golden_cross" in df.columns
+        assert "ema_death_cross" in df.columns
+
+    def test_golden_cross_detected(self):
+        n = 60
+        closes = [100.0 - i * 0.5 for i in range(30)] + [85.0 + i * 1.0 for i in range(30)]
+        df = pd.DataFrame({
+            "open": closes,
+            "high": [c + 1 for c in closes],
+            "low": [c - 1 for c in closes],
+            "close": closes,
+            "volume": [1000] * n,
+        })
+        df = add_ema(df, 20)
+        df = add_ema(df, 50)
+        df = add_ema_crossover(df, 20, 50)
+        assert df["ema_golden_cross"].any()
+
+    def test_auto_adds_ema_if_missing(self):
+        df = _make_df()
+        df = add_ema_crossover(df, 20, 50)
+        assert "ema_20" in df.columns
+        assert "ema_50" in df.columns
+
+
+class TestRSISignal:
+    def test_columns_added(self):
+        df = _make_df()
+        df = add_rsi(df)
+        df = add_rsi_signal(df)
+        assert "rsi_signal" in df.columns
+        assert "rsi_cross_up" in df.columns
+        assert "rsi_cross_down" in df.columns
+
+    def test_auto_adds_rsi_if_missing(self):
+        df = _make_df()
+        df = add_rsi_signal(df)
+        assert "rsi" in df.columns
+
+
+class TestMACD:
+    def test_columns_added(self):
+        df = _make_df()
+        df = add_macd(df)
+        assert "macd" in df.columns
+        assert "macd_signal" in df.columns
+        assert "macd_hist" in df.columns
+        assert "macd_hist_cross_up" in df.columns
+        assert "macd_hist_cross_down" in df.columns
+
+    def test_histogram_sign_change(self):
+        df = _make_df(100)
+        df = add_macd(df)
+        assert df["macd_hist_cross_up"].any() or df["macd_hist_cross_down"].any()
+
+
+class TestSidewaysFilter:
+    def test_columns_added(self):
+        df = _make_df()
+        df = add_adx(df)
+        df = add_atr(df)
+        df = add_sideways_filter(df)
+        assert "is_sideways" in df.columns
+
+    def test_flat_market_detected(self):
+        n = 60
+        df = pd.DataFrame({
+            "open": [100.0] * n,
+            "high": [100.1] * n,
+            "low": [99.9] * n,
+            "close": [100.0] * n,
+            "volume": [1000.0] * n,
+        })
+        df = add_adx(df)
+        df = add_atr(df)
+        df = add_sideways_filter(df)
+        assert "is_sideways" in df.columns
+
+
+class TestCandlePatterns:
+    def test_columns_added(self):
+        df = _make_df()
+        df = add_candle_patterns(df)
+        expected = [
+            "candle_hammer", "candle_inverted_hammer",
+            "candle_bullish_engulfing", "candle_bearish_engulfing",
+            "candle_doji", "candle_morning_star",
+        ]
+        for col in expected:
+            assert col in df.columns
+
+    def test_doji_detection(self):
+        n = 5
+        df = pd.DataFrame({
+            "open": [100.0, 100.0, 100.0, 100.0, 100.0],
+            "high": [102.0, 102.0, 102.0, 102.0, 102.0],
+            "low": [98.0, 98.0, 98.0, 98.0, 98.0],
+            "close": [100.0, 100.0, 100.0, 100.0, 100.0],
+            "volume": [1000] * n,
+        })
+        df = add_candle_patterns(df)
+        assert df["candle_doji"].all()
+
+
+class TestVolumeAnomaly:
+    def test_columns_added(self):
+        df = _make_df()
+        df = add_volume_sma(df)
+        df = add_volume_anomaly(df)
+        assert "volume_anomaly" in df.columns
+
+    def test_spike_detected(self):
+        n = 30
+        volumes = [1000.0] * 29 + [3000.0]
+        df = pd.DataFrame({
+            "open": [100.0] * n,
+            "high": [101.0] * n,
+            "low": [99.0] * n,
+            "close": [100.0] * n,
+            "volume": volumes,
+        })
+        df = add_volume_sma(df)
+        df = add_volume_anomaly(df, threshold=2.0)
+        assert df["volume_anomaly"].iloc[-1] == True
+
+
 class TestAddAllFeatures:
     def test_all_features_present(self):
         df = add_all_features(_make_df())
@@ -153,6 +293,13 @@ class TestAddAllFeatures:
             "donchian_high", "donchian_low", "donchian_mid",
             "rsi", "bb_upper", "bb_lower", "bb_mid", "bb_width",
             "volume_sma", "volume_ratio",
+            # Phase 1 additions
+            "ema_golden_cross", "ema_death_cross",
+            "rsi_signal", "rsi_cross_up", "rsi_cross_down",
+            "macd", "macd_signal", "macd_hist",
+            "is_sideways",
+            "candle_hammer", "candle_doji",
+            "volume_anomaly",
         ]
         for col in expected:
             assert col in df.columns, f"Missing column: {col}"

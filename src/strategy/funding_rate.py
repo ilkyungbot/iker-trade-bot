@@ -1,11 +1,8 @@
 """
 Layer 3: Strategy B — Funding Rate Reversal.
 
-Logic: When 8H funding rate exceeds ±0.1%, take opposite position
-but ONLY when price confirms reversal (not blindly counter-trend).
-
-Stop-loss: ATR × 1.0 (tight)
-Take-profit: Funding rate normalization or ATR × 1.5
+펀딩레이트 0.07% 초과 시 역전 포지션 + RSI 확인.
+임계값 완화: 0.1% → 0.07%, RSI 70/30 → 65/35.
 """
 
 import logging
@@ -13,22 +10,20 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from core.types import Signal, SignalAction, StrategyName, FundingRate
+from core.types import Signal, SignalAction, SignalMessage, SignalQuality, StrategyName
 from strategy.base import Strategy
 
 logger = logging.getLogger(__name__)
 
-# Funding rate thresholds
-FUNDING_EXTREME_THRESHOLD = 0.001  # 0.1% per 8h
-FUNDING_NORMAL_THRESHOLD = 0.0005  # 0.05% — considered "normalized"
+# 완화된 임계값
+FUNDING_EXTREME_THRESHOLD = 0.0007  # 0.07% per 8h
+FUNDING_NORMAL_THRESHOLD = 0.0005   # 0.05% — considered "normalized"
 
-# ATR multipliers
 ATR_SL_MULTIPLIER = 1.0
 ATR_TP_MULTIPLIER = 1.5
 
-# Price confirmation: RSI must show reversal tendency
-RSI_OVERBOUGHT = 70
-RSI_OVERSOLD = 30
+RSI_OVERBOUGHT = 65
+RSI_OVERSOLD = 35
 
 
 class FundingRateStrategy(Strategy):
@@ -40,35 +35,23 @@ class FundingRateStrategy(Strategy):
 
     def generate_signal(
         self,
-        df_1h: pd.DataFrame,
-        df_4h: pd.DataFrame,
+        df: pd.DataFrame,
         symbol: str,
-        current_position_side: str | None = None,
         *,
         latest_funding_rate: float | None = None,
-    ) -> Signal | None:
-        """
-        Generate funding rate reversal signal.
-
-        Args:
-            df_1h: 1H candle data with features
-            df_4h: 4H candle data (used for context, not primary)
-            symbol: trading pair
-            current_position_side: existing position direction
-            latest_funding_rate: most recent funding rate value
-        """
+    ) -> SignalMessage | None:
         if latest_funding_rate is None:
             return None
 
-        if len(df_1h) < 20:
+        if len(df) < 20:
             return None
 
         required = ["close", "atr", "rsi"]
         for col in required:
-            if col not in df_1h.columns:
+            if col not in df.columns:
                 return None
 
-        current = df_1h.iloc[-1]
+        current = df.iloc[-1]
         close = current["close"]
         atr = current["atr"]
         rsi = current["rsi"]
@@ -80,78 +63,68 @@ class FundingRateStrategy(Strategy):
         if not isinstance(timestamp, datetime):
             timestamp = datetime.now(timezone.utc)
 
-        # --- Exit logic ---
-        if current_position_side is not None:
-            # Exit when funding normalizes
-            if abs(latest_funding_rate) < FUNDING_NORMAL_THRESHOLD:
-                return Signal(
-                    timestamp=timestamp,
-                    symbol=symbol,
-                    action=SignalAction.EXIT,
-                    strategy=StrategyName.FUNDING_RATE,
-                    entry_price=close,
-                    stop_loss=0.0,
-                    take_profit=0.0,
-                    confidence=0.6,
-                    metadata={"reason": "funding_normalized", "funding_rate": latest_funding_rate},
-                )
+        # 횡보장이면 스킵
+        if current.get("is_sideways", False):
             return None
 
-        # --- Entry logic ---
-
-        # Funding rate must be extreme
+        # 펀딩레이트가 극단적이지 않으면 스킵
         if abs(latest_funding_rate) < FUNDING_EXTREME_THRESHOLD:
             return None
 
+        explanation: list[str] = []
+        indicators = {
+            "funding_rate": round(latest_funding_rate * 100, 4),
+            "rsi": round(float(rsi), 1),
+            "atr": round(float(atr), 4),
+        }
+
         if latest_funding_rate >= FUNDING_EXTREME_THRESHOLD:
-            # Funding is very positive → longs are paying shorts
-            # → Market is overleveraged long → short opportunity
-            # BUT only if price shows weakness (RSI overbought or declining)
+            # 양의 펀딩 → 롱 과열 → 숏 기회
             if rsi < RSI_OVERBOUGHT:
-                return None  # price not confirming reversal yet
+                return None  # RSI 확인 안 됨
+            explanation.append(f"펀딩레이트 +{latest_funding_rate*100:.3f}% (롱 과열)")
+            explanation.append(f"RSI {rsi:.0f} > {RSI_OVERBOUGHT} (과매수 확인)")
 
-            stop_loss = close + (atr * ATR_SL_MULTIPLIER)
-            take_profit = close - (atr * ATR_TP_MULTIPLIER)
-
-            return Signal(
-                timestamp=timestamp,
-                symbol=symbol,
-                action=SignalAction.ENTER_SHORT,
-                strategy=StrategyName.FUNDING_RATE,
-                entry_price=close,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                confidence=min(abs(latest_funding_rate) / 0.003, 1.0),
-                metadata={
-                    "funding_rate": latest_funding_rate,
-                    "rsi": round(rsi, 2),
-                    "atr": round(atr, 4),
-                },
-            )
+            sl = close + (atr * ATR_SL_MULTIPLIER)
+            tp = close - (atr * ATR_TP_MULTIPLIER)
+            action = SignalAction.ENTER_SHORT
 
         elif latest_funding_rate <= -FUNDING_EXTREME_THRESHOLD:
-            # Funding is very negative → shorts are paying longs
-            # → Market is overleveraged short → long opportunity
+            # 음의 펀딩 → 숏 과열 → 롱 기회
             if rsi > RSI_OVERSOLD:
-                return None  # price not confirming reversal yet
+                return None
+            explanation.append(f"펀딩레이트 {latest_funding_rate*100:.3f}% (숏 과열)")
+            explanation.append(f"RSI {rsi:.0f} < {RSI_OVERSOLD} (과매도 확인)")
 
-            stop_loss = close - (atr * ATR_SL_MULTIPLIER)
-            take_profit = close + (atr * ATR_TP_MULTIPLIER)
+            sl = close - (atr * ATR_SL_MULTIPLIER)
+            tp = close + (atr * ATR_TP_MULTIPLIER)
+            action = SignalAction.ENTER_LONG
+        else:
+            return None
 
-            return Signal(
-                timestamp=timestamp,
-                symbol=symbol,
-                action=SignalAction.ENTER_LONG,
-                strategy=StrategyName.FUNDING_RATE,
-                entry_price=close,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                confidence=min(abs(latest_funding_rate) / 0.003, 1.0),
-                metadata={
-                    "funding_rate": latest_funding_rate,
-                    "rsi": round(rsi, 2),
-                    "atr": round(atr, 4),
-                },
-            )
+        confidence = min(abs(latest_funding_rate) / 0.003, 1.0)
+        sl_dist = abs(close - sl)
+        tp_dist = abs(tp - close)
+        rr_ratio = tp_dist / sl_dist if sl_dist > 0 else 0
 
-        return None
+        signal = Signal(
+            timestamp=timestamp,
+            symbol=symbol,
+            action=action,
+            strategy=StrategyName.FUNDING_RATE,
+            entry_price=close,
+            stop_loss=sl,
+            take_profit=tp,
+            confidence=confidence,
+            metadata={"funding_rate": latest_funding_rate},
+        )
+
+        quality = SignalQuality.STRONG if abs(latest_funding_rate) >= 0.001 else SignalQuality.MODERATE
+
+        return SignalMessage(
+            signal=signal,
+            quality=quality,
+            explanation=explanation,
+            indicators=indicators,
+            risk_reward_ratio=round(rr_ratio, 1),
+        )

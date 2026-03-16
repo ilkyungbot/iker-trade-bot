@@ -9,8 +9,6 @@ import os
 from dataclasses import dataclass
 from dotenv import load_dotenv
 
-from core.types import TradingMode
-
 load_dotenv()
 
 
@@ -25,7 +23,7 @@ class BybitConfig:
         return cls(
             api_key=os.getenv("BYBIT_API_KEY", ""),
             api_secret=os.getenv("BYBIT_API_SECRET", ""),
-            testnet=os.getenv("BYBIT_TESTNET", "true").lower() == "true",
+            testnet=os.getenv("BYBIT_TESTNET", "false").lower() == "true",
         )
 
 
@@ -36,7 +34,7 @@ class DatabaseConfig:
     @classmethod
     def from_env(cls) -> "DatabaseConfig":
         return cls(
-            url=os.getenv("DATABASE_URL", "sqlite:///futures_bot.db"),
+            url=os.getenv("DATABASE_URL", "sqlite:///signal_bot.db"),
         )
 
 
@@ -54,30 +52,27 @@ class TelegramConfig:
 
 
 @dataclass(frozen=True)
-class TradingConfig:
-    mode: TradingMode
-    default_leverage: float  # default leverage when model has no opinion
-    strategy_a_allocation: float  # fraction of capital for trend following
-    strategy_b_allocation: float  # fraction of capital for funding rate
+class SignalConfig:
+    signal_cooldown_minutes: int
+    monitoring_interval_minutes: int
+    signal_expiry_minutes: int
+    min_signal_quality: str
+    primary_interval: str         # 4H 봉 기본
+    candle_intervals: tuple[str, ...]
     max_pairs: int
-    pair_rebalance_days: int  # how often to rebalance pair selection
-    candle_intervals: tuple[str, ...]  # timeframes to collect
-    primary_interval: str  # main decision timeframe
-    trend_interval: str  # higher timeframe for trend context
+    pair_rebalance_days: int
 
     @classmethod
-    def from_env(cls) -> "TradingConfig":
-        paper = os.getenv("PAPER_TRADING", "true").lower() == "true"
+    def from_env(cls) -> "SignalConfig":
         return cls(
-            mode=TradingMode.PAPER if paper else TradingMode.LIVE,
-            default_leverage=5.0,
-            strategy_a_allocation=0.70,
-            strategy_b_allocation=0.30,
-            max_pairs=5,
-            pair_rebalance_days=14,
-            candle_intervals=("15", "60", "240"),  # 15m, 1H, 4H (Bybit format)
-            primary_interval="60",
-            trend_interval="240",
+            signal_cooldown_minutes=int(os.getenv("SIGNAL_COOLDOWN_MINUTES", "30")),
+            monitoring_interval_minutes=int(os.getenv("MONITORING_INTERVAL_MINUTES", "15")),
+            signal_expiry_minutes=int(os.getenv("SIGNAL_EXPIRY_MINUTES", "60")),
+            min_signal_quality=os.getenv("MIN_SIGNAL_QUALITY", "moderate"),
+            primary_interval=os.getenv("PRIMARY_INTERVAL", "240"),
+            candle_intervals=("15", "60", "240"),
+            max_pairs=int(os.getenv("MAX_PAIRS", "5")),
+            pair_rebalance_days=int(os.getenv("PAIR_REBALANCE_DAYS", "14")),
         )
 
 
@@ -86,26 +81,13 @@ class AppConfig:
     bybit: BybitConfig
     database: DatabaseConfig
     telegram: TelegramConfig
-    trading: TradingConfig
+    signal: SignalConfig
 
     @classmethod
     def from_env(cls) -> "AppConfig":
-        config = cls(
+        return cls(
             bybit=BybitConfig.from_env(),
             database=DatabaseConfig.from_env(),
             telegram=TelegramConfig.from_env(),
-            trading=TradingConfig.from_env(),
+            signal=SignalConfig.from_env(),
         )
-
-        # Validate required credentials in live mode
-        if config.trading.mode == TradingMode.LIVE:
-            if not config.bybit.api_key:
-                raise ValueError(
-                    "BYBIT_API_KEY environment variable is required for live trading"
-                )
-            if not config.bybit.api_secret:
-                raise ValueError(
-                    "BYBIT_API_SECRET environment variable is required for live trading"
-                )
-
-        return config

@@ -65,9 +65,10 @@ class TestBybitCollectorCandles:
 
 class TestBybitCollectorFunding:
     def test_parse_funding_rates(self):
+        # 1704067200000 = 2024-01-01 00:00 UTC, 1704096000000 = 2024-01-01 08:00 UTC
         mock_data = [
-            {"fundingRateTimestamp": "1704067200000", "fundingRate": "0.0001", "symbol": "BTCUSDT"},
-            {"fundingRateTimestamp": "1704038400000", "fundingRate": "-0.0002", "symbol": "BTCUSDT"},
+            {"fundingRateTimestamp": "1704096000000", "fundingRate": "0.0001", "symbol": "BTCUSDT"},
+            {"fundingRateTimestamp": "1704067200000", "fundingRate": "-0.0002", "symbol": "BTCUSDT"},
         ]
         client = MockBybitClient(funding_data=mock_data)
         collector = BybitCollector(client=client)

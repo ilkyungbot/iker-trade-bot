@@ -37,7 +37,7 @@ class BybitCollector:
         self.client = client
 
     @classmethod
-    def from_config(cls, api_key: str, api_secret: str, testnet: bool = True) -> "BybitCollector":
+    def from_config(cls, api_key: str, api_secret: str, testnet: bool = False) -> "BybitCollector":
         client = HTTP(
             testnet=testnet,
             api_key=api_key,
@@ -120,17 +120,21 @@ class BybitCollector:
         start_time: datetime,
         end_time: datetime | None = None,
     ) -> list[FundingRate]:
-        """Fetch historical funding rates."""
-        rates: list[FundingRate] = []
-        current_start = int(start_time.timestamp() * 1000)
-        end_ms = int(end_time.timestamp() * 1000) if end_time else int(time.time() * 1000)
+        """Fetch historical funding rates.
 
-        while current_start < end_ms:
+        Bybit v5 returns newest first. We use endTime to paginate backwards
+        from now until we reach start_time.
+        """
+        rates: list[FundingRate] = []
+        start_ms = int(start_time.timestamp() * 1000)
+        cursor_end = int(end_time.timestamp() * 1000) if end_time else int(time.time() * 1000)
+
+        while cursor_end > start_ms:
             try:
                 response = self.client.get_funding_rate_history(
                     category="linear",
                     symbol=symbol,
-                    startTime=current_start,
+                    endTime=cursor_end,
                     limit=200,
                 )
 
@@ -139,23 +143,22 @@ class BybitCollector:
                     break
 
                 for row in result_list:
-                    ts = datetime.fromtimestamp(
-                        int(row["fundingRateTimestamp"]) / 1000, tz=timezone.utc
-                    )
+                    ts_ms = int(row["fundingRateTimestamp"])
+                    if ts_ms < start_ms:
+                        continue
+                    ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
                     rates.append(FundingRate(
                         timestamp=ts,
                         symbol=symbol,
                         rate=float(row["fundingRate"]),
                     ))
 
-                # Bybit returns newest first, so last element has the oldest timestamp
+                # Oldest entry in this batch (last element, since newest-first)
                 oldest_ts = int(result_list[-1]["fundingRateTimestamp"])
-                if oldest_ts <= current_start:
-                    # No progress, we've fetched all available data
-                    break
-                # Advance past the newest entry in this batch
-                newest_ts = int(result_list[0]["fundingRateTimestamp"])
-                current_start = newest_ts + 1
+                if oldest_ts <= start_ms:
+                    break  # Reached our start boundary
+                # Move cursor before the oldest entry
+                cursor_end = oldest_ts - 1
 
                 if len(result_list) < 200:
                     break

@@ -1,13 +1,13 @@
-"""Tests for funding rate strategy."""
+"""Tests for funding rate strategy — 완화된 임계값."""
 
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 from strategy.funding_rate import FundingRateStrategy
-from core.types import SignalAction
+from core.types import SignalAction, SignalQuality
 
 
-def _make_df(n: int = 30, rsi: float = 50.0, atr: float = 2.0) -> pd.DataFrame:
-    timestamps = [datetime(2024, 1, 1, tzinfo=timezone.utc) + timedelta(hours=i) for i in range(n)]
+def _make_df(n: int = 30, rsi: float = 50.0, atr: float = 2.0, is_sideways: bool = False) -> pd.DataFrame:
+    timestamps = [datetime(2024, 1, 1, tzinfo=timezone.utc) + timedelta(hours=4*i) for i in range(n)]
     return pd.DataFrame({
         "timestamp": timestamps,
         "close": [100.0] * n,
@@ -17,123 +17,147 @@ def _make_df(n: int = 30, rsi: float = 50.0, atr: float = 2.0) -> pd.DataFrame:
         "volume": [1000.0] * n,
         "atr": [atr] * n,
         "rsi": [rsi] * n,
+        "is_sideways": [is_sideways] * n,
     })
 
 
 class TestFundingRateEntry:
-    def test_short_on_extreme_positive_funding_with_overbought_rsi(self):
+    def test_short_on_extreme_positive_funding(self):
+        """양의 펀딩 + RSI 65+ → 숏 시그널."""
         strategy = FundingRateStrategy()
-        df_1h = _make_df(rsi=75.0)  # overbought
-        df_4h = _make_df()
+        df = _make_df(rsi=70.0)
 
-        signal = strategy.generate_signal(
-            df_1h, df_4h, "BTCUSDT",
-            latest_funding_rate=0.002,  # extreme positive
-        )
-
-        assert signal is not None
-        assert signal.action == SignalAction.ENTER_SHORT
-
-    def test_long_on_extreme_negative_funding_with_oversold_rsi(self):
-        strategy = FundingRateStrategy()
-        df_1h = _make_df(rsi=25.0)  # oversold
-        df_4h = _make_df()
-
-        signal = strategy.generate_signal(
-            df_1h, df_4h, "BTCUSDT",
-            latest_funding_rate=-0.002,  # extreme negative
-        )
-
-        assert signal is not None
-        assert signal.action == SignalAction.ENTER_LONG
-
-    def test_no_signal_on_normal_funding(self):
-        strategy = FundingRateStrategy()
-        df_1h = _make_df(rsi=75.0)
-        df_4h = _make_df()
-
-        signal = strategy.generate_signal(
-            df_1h, df_4h, "BTCUSDT",
-            latest_funding_rate=0.0001,  # normal
-        )
-
-        assert signal is None
-
-    def test_no_signal_without_price_confirmation(self):
-        strategy = FundingRateStrategy()
-        df_1h = _make_df(rsi=50.0)  # RSI neutral — no confirmation
-        df_4h = _make_df()
-
-        signal = strategy.generate_signal(
-            df_1h, df_4h, "BTCUSDT",
+        result = strategy.generate_signal(
+            df, "BTCUSDT",
             latest_funding_rate=0.002,
         )
 
-        assert signal is None
+        assert result is not None
+        assert result.signal.action == SignalAction.ENTER_SHORT
+        assert len(result.explanation) >= 2
+
+    def test_long_on_extreme_negative_funding(self):
+        """음의 펀딩 + RSI 35- → 롱 시그널."""
+        strategy = FundingRateStrategy()
+        df = _make_df(rsi=30.0)
+
+        result = strategy.generate_signal(
+            df, "BTCUSDT",
+            latest_funding_rate=-0.002,
+        )
+
+        assert result is not None
+        assert result.signal.action == SignalAction.ENTER_LONG
+
+    def test_threshold_lowered_to_007(self):
+        """0.07% 임계값으로 완화됨."""
+        strategy = FundingRateStrategy()
+        df = _make_df(rsi=70.0)
+
+        # 0.08% → 이전 0.1% 기준에서는 무시됨, 이제는 시그널
+        result = strategy.generate_signal(
+            df, "BTCUSDT",
+            latest_funding_rate=0.0008,
+        )
+        assert result is not None
+
+    def test_no_signal_below_threshold(self):
+        strategy = FundingRateStrategy()
+        df = _make_df(rsi=70.0)
+
+        result = strategy.generate_signal(
+            df, "BTCUSDT",
+            latest_funding_rate=0.0005,  # 0.05% → 임계값 미달
+        )
+        assert result is None
+
+    def test_rsi_threshold_relaxed_to_65(self):
+        """RSI 65에서 시그널 생성 (기존 70에서 완화)."""
+        strategy = FundingRateStrategy()
+        df = _make_df(rsi=66.0)
+
+        result = strategy.generate_signal(
+            df, "BTCUSDT",
+            latest_funding_rate=0.002,
+        )
+        assert result is not None
+
+    def test_no_signal_without_rsi_confirmation(self):
+        strategy = FundingRateStrategy()
+        df = _make_df(rsi=50.0)
+
+        result = strategy.generate_signal(
+            df, "BTCUSDT",
+            latest_funding_rate=0.002,
+        )
+        assert result is None
 
     def test_no_signal_without_funding_rate(self):
         strategy = FundingRateStrategy()
-        df_1h = _make_df(rsi=75.0)
-        df_4h = _make_df()
+        df = _make_df(rsi=75.0)
+        result = strategy.generate_signal(df, "BTCUSDT")
+        assert result is None
 
-        signal = strategy.generate_signal(df_1h, df_4h, "BTCUSDT")
-        assert signal is None
-
-
-class TestFundingRateExit:
-    def test_exit_when_funding_normalizes(self):
+    def test_sideways_blocks_signal(self):
         strategy = FundingRateStrategy()
-        df_1h = _make_df()
-        df_4h = _make_df()
+        df = _make_df(rsi=70.0, is_sideways=True)
 
-        signal = strategy.generate_signal(
-            df_1h, df_4h, "BTCUSDT",
-            current_position_side="short",
-            latest_funding_rate=0.0001,  # normalized
+        result = strategy.generate_signal(
+            df, "BTCUSDT",
+            latest_funding_rate=0.002,
         )
+        assert result is None
 
-        assert signal is not None
-        assert signal.action == SignalAction.EXIT
 
-    def test_hold_when_funding_still_extreme(self):
+class TestFundingRateQuality:
+    def test_strong_on_very_extreme_funding(self):
+        """0.1%+ → STRONG."""
         strategy = FundingRateStrategy()
-        df_1h = _make_df()
-        df_4h = _make_df()
+        df = _make_df(rsi=75.0)
 
-        signal = strategy.generate_signal(
-            df_1h, df_4h, "BTCUSDT",
-            current_position_side="short",
-            latest_funding_rate=0.002,  # still extreme
+        result = strategy.generate_signal(
+            df, "BTCUSDT",
+            latest_funding_rate=0.0015,
         )
+        assert result is not None
+        assert result.quality == SignalQuality.STRONG
 
-        assert signal is None  # hold position
+    def test_moderate_on_mild_extreme(self):
+        """0.07~0.1% → MODERATE."""
+        strategy = FundingRateStrategy()
+        df = _make_df(rsi=70.0)
+
+        result = strategy.generate_signal(
+            df, "BTCUSDT",
+            latest_funding_rate=0.0008,
+        )
+        assert result is not None
+        assert result.quality == SignalQuality.MODERATE
 
 
 class TestFundingRateStopLoss:
     def test_short_stop_above_entry(self):
         strategy = FundingRateStrategy()
-        df_1h = _make_df(rsi=75.0, atr=3.0)
-        df_4h = _make_df()
+        df = _make_df(rsi=75.0, atr=3.0)
 
-        signal = strategy.generate_signal(
-            df_1h, df_4h, "BTCUSDT",
+        result = strategy.generate_signal(
+            df, "BTCUSDT",
             latest_funding_rate=0.002,
         )
 
-        assert signal is not None
-        assert signal.stop_loss > signal.entry_price
-        assert signal.stop_loss == signal.entry_price + 3.0  # ATR × 1.0
+        assert result is not None
+        assert result.signal.stop_loss > result.signal.entry_price
+        assert result.signal.stop_loss == result.signal.entry_price + 3.0
 
     def test_long_stop_below_entry(self):
         strategy = FundingRateStrategy()
-        df_1h = _make_df(rsi=25.0, atr=3.0)
-        df_4h = _make_df()
+        df = _make_df(rsi=25.0, atr=3.0)
 
-        signal = strategy.generate_signal(
-            df_1h, df_4h, "BTCUSDT",
+        result = strategy.generate_signal(
+            df, "BTCUSDT",
             latest_funding_rate=-0.002,
         )
 
-        assert signal is not None
-        assert signal.stop_loss < signal.entry_price
-        assert signal.stop_loss == signal.entry_price - 3.0
+        assert result is not None
+        assert result.signal.stop_loss < result.signal.entry_price
+        assert result.signal.stop_loss == result.signal.entry_price - 3.0

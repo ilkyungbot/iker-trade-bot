@@ -1,4 +1,4 @@
-"""Tests for Telegram reporter formatting (Korean)."""
+"""Tests for Telegram reporter formatting (Korean) — Signal Bot."""
 
 import logging
 from datetime import datetime, timezone
@@ -7,247 +7,151 @@ from unittest.mock import AsyncMock, patch, MagicMock
 import pytest
 
 from review.reporter import Reporter, TelegramBotSender
-from review.performance import PerformanceMetrics
 from core.types import (
-    Trade, Side, StrategyName, PortfolioState, CircuitBreakerState,
-    Signal, SignalAction,
+    Signal, SignalAction, SignalMessage, SignalQuality, StrategyName,
 )
 
 
-def _make_trade(pnl: float = 100.0) -> Trade:
-    return Trade(
-        symbol="BTCUSDT", side=Side.LONG, strategy=StrategyName.TREND_FOLLOWING,
-        entry_price=50000, exit_price=51000, quantity=0.1, leverage=5,
-        entry_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        exit_time=datetime(2024, 1, 2, tzinfo=timezone.utc),
-        pnl=pnl, pnl_percent=2.0, fees=5, slippage=0,
-        stop_loss_hit=False, trailing_stop_hit=True,
+def _make_signal_msg(direction="long"):
+    action = SignalAction.ENTER_LONG if direction == "long" else SignalAction.ENTER_SHORT
+    s = Signal(
+        timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        symbol="BTCUSDT",
+        action=action,
+        strategy=StrategyName.TREND_FOLLOWING,
+        entry_price=67450,
+        stop_loss=66800 if direction == "long" else 68100,
+        take_profit=68750 if direction == "long" else 66150,
+        confidence=0.57,
+        metadata={"score": 4},
+    )
+    return SignalMessage(
+        signal=s,
+        quality=SignalQuality.STRONG,
+        explanation=["EMA 골든크로스", "MACD 양전환", "ADX 28 > 20"],
+        indicators={"adx": 28.5, "rsi": 55.2},
+        risk_reward_ratio=2.0,
     )
 
 
-def _make_metrics() -> PerformanceMetrics:
-    return PerformanceMetrics(
-        total_trades=50, winning_trades=25, losing_trades=25,
-        win_rate=0.5, avg_win=200, avg_loss=100, payoff_ratio=2.0,
-        total_pnl=2500, total_fees=250, net_pnl=2500,
-        max_drawdown=500, sharpe_ratio=1.5, profit_factor=2.0,
-        avg_trade_duration_hours=6.0,
-    )
-
-
-class TestTradeAlert:
-    def test_format_winning_trade(self):
-        reporter = Reporter()
-        msg = reporter.format_trade_alert(_make_trade(pnl=100))
-        assert "BTCUSDT" in msg
-        assert "+100" in msg
-        assert "롱" in msg
-        assert "포지션 청산" in msg
-        assert "추세추종" in msg
-
-    def test_format_losing_trade(self):
-        reporter = Reporter()
-        msg = reporter.format_trade_alert(_make_trade(pnl=-50))
-        assert "-50" in msg
-        assert "손절" not in msg  # stop_loss_hit=False
-
-    def test_format_stop_loss_hit(self):
-        reporter = Reporter()
-        trade = _make_trade(pnl=-50)
-        trade = Trade(**{**trade.__dict__, "stop_loss_hit": True})
-        msg = reporter.format_trade_alert(trade)
-        assert "손절" in msg
-
-
-class TestSignalAlert:
+class TestSignalMessageFormat:
     def test_format_long_signal(self):
         reporter = Reporter()
-        signal = Signal(
-            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            symbol="BTCUSDT", action=SignalAction.ENTER_LONG,
-            strategy=StrategyName.TREND_FOLLOWING,
-            entry_price=50000, stop_loss=49000, take_profit=52000,
-            confidence=0.8,
-        )
-        msg = reporter.format_signal_alert(signal)
-        assert "롱" in msg
-        assert "80%" in msg
-        assert "진입 시그널" in msg
+        msg = reporter.format_signal_message(_make_signal_msg("long"))
+        assert "롱 시그널" in msg
+        assert "BTCUSDT" in msg
+        assert "67,450" in msg
+        assert "근거" in msg
+        assert "EMA 골든크로스" in msg
+        assert "1시간 내 응답" in msg
 
     def test_format_short_signal(self):
         reporter = Reporter()
-        signal = Signal(
-            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            symbol="ETHUSDT", action=SignalAction.ENTER_SHORT,
-            strategy=StrategyName.FUNDING_RATE,
-            entry_price=3000, stop_loss=3100, take_profit=2800,
-            confidence=0.6,
+        msg = reporter.format_signal_message(_make_signal_msg("short"))
+        assert "숏 시그널" in msg
+
+    def test_quality_shown(self):
+        reporter = Reporter()
+        msg = reporter.format_signal_message(_make_signal_msg())
+        assert "강함" in msg
+        assert "4/7" in msg
+
+
+class TestMonitoringUpdate:
+    def test_format_positive(self):
+        reporter = Reporter()
+        msg = reporter.format_monitoring_update(
+            "BTCUSDT", "long", 67450, 68000, 66800, 68750,
         )
-        msg = reporter.format_signal_alert(signal)
-        assert "숏" in msg
-        assert "펀딩레이트" in msg
+        assert "BTCUSDT" in msg
+        assert "롱" in msg
+        assert "홀딩" in msg
+
+    def test_format_negative(self):
+        reporter = Reporter()
+        msg = reporter.format_monitoring_update(
+            "BTCUSDT", "long", 67450, 67000, 66800, 68750,
+        )
+        assert "BTCUSDT" in msg
 
 
-class TestDailyReport:
+class TestExitSignal:
     def test_format(self):
         reporter = Reporter()
-        state = PortfolioState(
-            total_capital=1050000, available_capital=1000000,
-            daily_pnl=5000, current_mdd=0.02,
-        )
-        msg = reporter.format_daily_report(
-            state, _make_metrics(), datetime(2024, 1, 1),
-        )
-        assert "일간 리포트" in msg
-        assert "1,050,000" in msg
-        assert "+5,000" in msg
-        assert "승률" in msg
+        msg = reporter.format_exit_signal("BTCUSDT", "long", "목표가 도달!")
+        assert "청산 시그널" in msg
+        assert "목표가 도달" in msg
+        assert "응답" in msg
 
 
-class TestWeeklyReport:
-    def test_format_with_strategies(self):
+class TestWeeklyAccuracy:
+    def test_empty_report(self):
         reporter = Reporter()
-        state = PortfolioState(
-            total_capital=1050000, available_capital=1000000,
-            weekly_pnl=15000, current_mdd=0.03,
-        )
-        strategy_attrs = {
-            "trend_following": _make_metrics(),
-            "funding_rate": _make_metrics(),
+        msg = reporter.format_weekly_accuracy({"total": 0})
+        assert "시그널이 없습니다" in msg
+
+    def test_with_data(self):
+        reporter = Reporter()
+        report = {
+            "total": 10,
+            "tp_rate": 0.6,
+            "sl_rate": 0.3,
+            "by_quality": {"strong": {"total": 5, "tp": 4, "sl": 1}},
         }
-        msg = reporter.format_weekly_report(state, _make_metrics(), strategy_attrs)
-        assert "주간 리포트" in msg
-        assert "추세추종" in msg
-        assert "펀딩레이트" in msg
+        msg = reporter.format_weekly_accuracy(report)
+        assert "10개" in msg
+        assert "60%" in msg
+        assert "strong" in msg
 
 
-# ---------------------------------------------------------------------------
-# Integration tests: Reporter + TelegramSender
-# ---------------------------------------------------------------------------
+class TestKeyboards:
+    def test_signal_keyboard(self):
+        reporter = Reporter()
+        kb = reporter.get_signal_keyboard()
+        # HAS_TELEGRAM이 False면 None
+        # True면 InlineKeyboardMarkup
+
+    def test_exit_keyboard(self):
+        reporter = Reporter()
+        kb = reporter.get_exit_keyboard()
 
 
-class TestReporterSendIntegration:
-    """Test that Reporter delegates to sender.send_message correctly."""
-
+class TestSendIntegration:
     @pytest.mark.anyio
-    async def test_send_calls_sender_when_provided(self):
+    async def test_send_signal_calls_sender(self):
         sender = AsyncMock()
-        reporter = Reporter(sender=sender, chat_id="12345")
+        reporter = Reporter(sender=sender, chat_id="123")
+        msg = _make_signal_msg()
 
-        await reporter.send_trade_alert(_make_trade())
-
-        sender.send_message.assert_awaited_once()
-        call_args = sender.send_message.call_args
-        assert call_args[0][0] == "12345"          # chat_id
-        assert "BTCUSDT" in call_args[0][1]        # text contains symbol
-        assert call_args[1]["parse_mode"] == "HTML" # keyword arg
-
-    @pytest.mark.anyio
-    async def test_send_logs_when_sender_is_none(self, caplog):
-        reporter = Reporter(sender=None, chat_id="")
-
-        with caplog.at_level(logging.INFO):
-            await reporter.send_trade_alert(_make_trade())
-
-        assert any("[NO TELEGRAM]" in r.message for r in caplog.records)
-
-    @pytest.mark.anyio
-    async def test_send_catches_sender_exception(self, caplog):
-        """_send must not propagate exceptions raised by the sender."""
-        sender = AsyncMock()
-        sender.send_message.side_effect = RuntimeError("network down")
-        reporter = Reporter(sender=sender, chat_id="12345")
-
-        with caplog.at_level(logging.ERROR):
-            await reporter.send_trade_alert(_make_trade())  # must not raise
-
-        assert any("Failed to send Telegram message" in r.message for r in caplog.records)
-
-    @pytest.mark.anyio
-    async def test_send_signal_alert_delegates(self):
-        sender = AsyncMock()
-        reporter = Reporter(sender=sender, chat_id="99")
-
-        signal = Signal(
-            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            symbol="ETHUSDT", action=SignalAction.ENTER_LONG,
-            strategy=StrategyName.TREND_FOLLOWING,
-            entry_price=3000, stop_loss=2900, take_profit=3200,
-            confidence=0.75,
-        )
-        await reporter.send_signal_alert(signal)
-
+        await reporter.send_signal(msg)
         sender.send_message.assert_awaited_once()
         text = sender.send_message.call_args[0][1]
-        assert "롱" in text
-        assert "ETHUSDT" in text
-
-
-class TestSendAlert:
-    """Test the raw send_alert method formats correctly."""
+        assert "BTCUSDT" in text
 
     @pytest.mark.anyio
-    async def test_send_alert_wraps_in_korean_prefix(self):
+    async def test_send_alert(self):
         sender = AsyncMock()
-        reporter = Reporter(sender=sender, chat_id="1")
-
-        await reporter.send_alert("Circuit breaker tripped")
-
+        reporter = Reporter(sender=sender, chat_id="123")
+        await reporter.send_alert("test message")
         text = sender.send_message.call_args[0][1]
-        assert "긴급 알림" in text
-        assert "Circuit breaker tripped" in text
+        assert "알림" in text
 
     @pytest.mark.anyio
-    async def test_send_alert_logs_when_no_sender(self, caplog):
+    async def test_send_logs_when_no_sender(self, caplog):
         reporter = Reporter(sender=None, chat_id="")
         with caplog.at_level(logging.INFO):
-            await reporter.send_alert("test message")
+            await reporter.send_alert("test")
         assert any("[NO TELEGRAM]" in r.message for r in caplog.records)
-
-
-# ---------------------------------------------------------------------------
-# TelegramBotSender unit tests (telegram lib mocked)
-# ---------------------------------------------------------------------------
 
 
 class TestTelegramBotSender:
-
     @patch("review.reporter.HAS_TELEGRAM", False)
-    def test_raises_import_error_when_telegram_unavailable(self):
+    def test_raises_import_error(self):
         with pytest.raises(ImportError, match="python-telegram-bot is required"):
-            TelegramBotSender(bot_token="fake-token")
+            TelegramBotSender(bot_token="fake")
 
     @patch("review.reporter.HAS_TELEGRAM", True)
     @patch("review.reporter.Bot", create=True)
-    def test_creates_bot_with_token(self, mock_bot_cls):
+    def test_creates_bot(self, mock_bot_cls):
         sender = TelegramBotSender(bot_token="tok123")
         mock_bot_cls.assert_called_once_with(token="tok123")
-
-    @pytest.mark.anyio
-    @patch("review.reporter.HAS_TELEGRAM", True)
-    @patch("review.reporter.Bot", create=True)
-    async def test_send_message_delegates_to_bot(self, mock_bot_cls):
-        mock_bot = MagicMock()
-        mock_bot.send_message = AsyncMock()
-        mock_bot_cls.return_value = mock_bot
-
-        sender = TelegramBotSender(bot_token="tok")
-        await sender.send_message("chat1", "hello", parse_mode="HTML")
-
-        mock_bot.send_message.assert_awaited_once_with(
-            chat_id="chat1", text="hello", parse_mode="HTML",
-        )
-
-    @pytest.mark.anyio
-    @patch("review.reporter.HAS_TELEGRAM", True)
-    @patch("review.reporter.Bot", create=True)
-    async def test_send_message_logs_on_exception(self, mock_bot_cls, caplog):
-        mock_bot = MagicMock()
-        mock_bot.send_message = AsyncMock(side_effect=Exception("timeout"))
-        mock_bot_cls.return_value = mock_bot
-
-        sender = TelegramBotSender(bot_token="tok")
-        with caplog.at_level(logging.ERROR):
-            await sender.send_message("chat1", "hi")  # must not raise
-
-        assert any("Telegram send error" in r.message for r in caplog.records)

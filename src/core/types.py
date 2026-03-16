@@ -24,30 +24,17 @@ class StrategyName(Enum):
     FUNDING_RATE = "funding_rate"
 
 
-class OrderType(Enum):
-    LIMIT = "limit"
-    MARKET = "market"
+class ConversationState(Enum):
+    IDLE = "idle"
+    SIGNAL_SENT = "signal_sent"
+    MONITORING = "monitoring"
+    EXIT_SIGNAL_SENT = "exit_signal_sent"
 
 
-class OrderStatus(Enum):
-    PENDING = "pending"
-    FILLED = "filled"
-    PARTIALLY_FILLED = "partially_filled"
-    CANCELLED = "cancelled"
-    REJECTED = "rejected"
-
-
-class TradingMode(Enum):
-    PAPER = "paper"
-    LIVE = "live"
-
-
-class CircuitBreakerState(Enum):
-    NORMAL = "normal"
-    DAILY_HALT = "daily_halt"
-    WEEKLY_HALT = "weekly_halt"
-    SIZE_REDUCED = "size_reduced"
-    FULL_STOP = "full_stop"
+class SignalQuality(Enum):
+    STRONG = "strong"      # 3+ 지표 일치
+    MODERATE = "moderate"  # 2개 지표 일치
+    WEAK = "weak"          # 1개만
 
 
 @dataclass(frozen=True)
@@ -89,29 +76,22 @@ class Signal:
     metadata: dict = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class SignalMessage:
+    signal: Signal
+    quality: SignalQuality
+    explanation: list[str]       # 한국어 사유 목록
+    indicators: dict             # 지표 스냅샷
+    risk_reward_ratio: float
+
+
 @dataclass
-class Position:
-    symbol: str
-    side: Side
-    entry_price: float
-    quantity: float
-    leverage: float
-    stop_loss: float
-    trailing_stop: float
-    strategy: StrategyName
-    entry_time: datetime
-    unrealized_pnl: float = 0.0
-    highest_pnl: float = 0.0  # for trailing stop tracking
-    exchange_sl_order_id: str | None = None
-    metadata: dict = field(default_factory=dict)  # carries ml_features etc.
-
-    @property
-    def notional_value(self) -> float:
-        return self.entry_price * self.quantity
-
-    @property
-    def margin_used(self) -> float:
-        return self.notional_value / self.leverage
+class UserSession:
+    chat_id: str
+    state: ConversationState
+    active_signal: SignalMessage | None = None
+    entry_confirmed_at: datetime | None = None
+    user_entry_price: float | None = None
 
 
 @dataclass(frozen=True)
@@ -133,45 +113,6 @@ class Trade:
     stop_loss_hit: bool
     trailing_stop_hit: bool
     metadata: dict = field(default_factory=dict)
-
-
-@dataclass
-class Order:
-    symbol: str
-    side: Side
-    order_type: OrderType
-    price: float
-    quantity: float
-    leverage: float
-    status: OrderStatus = OrderStatus.PENDING
-    order_id: str | None = None
-    exchange_order_id: str | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    filled_at: datetime | None = None
-    cancel_after_candles: int = 2  # cancel limit order after N candles
-
-
-@dataclass
-class PortfolioState:
-    """Current state of the entire portfolio."""
-    total_capital: float
-    available_capital: float
-    positions: list[Position] = field(default_factory=list)
-    daily_pnl: float = 0.0
-    weekly_pnl: float = 0.0
-    peak_capital: float = 0.0
-    current_mdd: float = 0.0
-    consecutive_losses: int = 0
-    consecutive_wins: int = 0
-    circuit_breaker_state: CircuitBreakerState = CircuitBreakerState.NORMAL
-
-    @property
-    def total_margin_used(self) -> float:
-        return sum(p.margin_used for p in self.positions)
-
-    @property
-    def position_count(self) -> int:
-        return len(self.positions)
 
 
 @dataclass(frozen=True)
