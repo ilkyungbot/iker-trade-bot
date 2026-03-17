@@ -205,27 +205,8 @@ class SignalBot:
         tickers = await self._run_sync(self.collector.get_all_usdt_perpetuals)
         top_tickers = tickers[:20]
 
-        # 2. 주요 코인 현황 (상위 10개) — 티커 데이터 직접 사용
-        top_coins = []
-        for t in top_tickers[:10]:
-            # 1시간 변동률 계산
-            prev_1h = t.get("prev_price_1h", 0)
-            last = t["last_price"]
-            change_1h = (last - prev_1h) / prev_1h * 100 if prev_1h > 0 else 0
-
-            top_coins.append({
-                "symbol": t["symbol"],
-                "price": last,
-                "change_1h": round(change_1h, 2),
-                "change_24h": round(t.get("price_24h_pct", 0), 2),
-                "high_24h": t.get("high_24h", 0),
-                "low_24h": t.get("low_24h", 0),
-                "volume_24h": t["volume_24h"],
-            })
-
-        briefing["market_summary"]["top_coins"] = top_coins
-
-        # 3. 스코어링 스캔 (상위 20개 코인)
+        # 2. 스코어링 스캔 먼저 (시간 소요됨)
+        #    가격은 스캔 후 다시 가져옴
         scored_coins = []
         for t in top_tickers:
             symbol = t["symbol"]
@@ -276,6 +257,42 @@ class SignalBot:
 
         # 5. 현재 관찰 페어
         briefing["watched_pairs"] = [p.symbol for p in self.pair_selector._current_pairs]
+
+        # 6. 주요 코인 현황 — 스캔 후 최신 가격 재조회
+        fresh_tickers = await self._run_sync(self.collector.get_all_usdt_perpetuals)
+        fresh_map = {t["symbol"]: t for t in fresh_tickers}
+        fetch_time = datetime.now(timezone.utc)
+        briefing["time"] = fetch_time.strftime("%m/%d %H:%M:%S UTC")
+
+        top_coins = []
+        for t in fresh_tickers[:10]:
+            symbol = t["symbol"]
+            price = t["mark_price"]  # mark_price가 거래소 UI와 동일
+            high = t.get("high_24h", 0)
+            low = t.get("low_24h", 0)
+
+            # 가격 검증: mark_price가 24h 범위 밖이면 로그
+            if high > 0 and price > high * 1.05:
+                logger.warning(
+                    f"Price sanity check failed for {symbol}: "
+                    f"mark={price}, high24h={high}, last={t['last_price']}"
+                )
+                price = t["last_price"]  # fallback
+
+            prev_1h = t.get("prev_price_1h", 0)
+            change_1h = (price - prev_1h) / prev_1h * 100 if prev_1h > 0 else 0
+
+            top_coins.append({
+                "symbol": symbol,
+                "price": price,
+                "change_1h": round(change_1h, 2),
+                "change_24h": round(t.get("price_24h_pct", 0), 2),
+                "high_24h": high,
+                "low_24h": low,
+                "volume_24h": t["volume_24h"],
+            })
+
+        briefing["market_summary"]["top_coins"] = top_coins
 
         return briefing
 
@@ -420,9 +437,16 @@ class SignalBot:
         # 4. 펀딩비
         funding_rate = ticker.get("funding_rate", 0)
 
+        # 4.5. 캔들 스캔 후 최신 가격 재조회
+        fresh_tickers = await self._run_sync(self.collector.get_all_usdt_perpetuals)
+        for ft in fresh_tickers:
+            if ft["symbol"] == symbol:
+                ticker = ft
+                break
+
         # 5. 개별 지표 상세
         prev_1h = ticker.get("prev_price_1h", 0)
-        last = ticker["last_price"]
+        last = ticker["mark_price"]  # mark_price가 거래소 UI와 동일
         change_1h = (last - prev_1h) / prev_1h * 100 if prev_1h > 0 else 0
 
         indicators = {
