@@ -205,30 +205,23 @@ class SignalBot:
         tickers = await self._run_sync(self.collector.get_all_usdt_perpetuals)
         top_tickers = tickers[:20]
 
-        # 2. 주요 코인 현황 (상위 10개)
+        # 2. 주요 코인 현황 (상위 10개) — 티커 데이터 직접 사용
         top_coins = []
         for t in top_tickers[:10]:
-            symbol = t["symbol"]
-            try:
-                candles = await self._run_sync(
-                    self.collector.get_candles,
-                    symbol, "240",
-                    start_time=now - timedelta(hours=8),
-                )
-                change_4h = 0.0
-                if candles and len(candles) >= 2:
-                    prev_close = candles[-2].close
-                    curr_close = candles[-1].close
-                    change_4h = (curr_close - prev_close) / prev_close * 100 if prev_close > 0 else 0
+            # 1시간 변동률 계산
+            prev_1h = t.get("prev_price_1h", 0)
+            last = t["last_price"]
+            change_1h = (last - prev_1h) / prev_1h * 100 if prev_1h > 0 else 0
 
-                top_coins.append({
-                    "symbol": symbol,
-                    "price": t["last_price"],
-                    "change_4h": round(change_4h, 2),
-                    "volume_24h": t["volume_24h"],
-                })
-            except Exception as e:
-                logger.debug(f"Briefing ticker error {symbol}: {e}")
+            top_coins.append({
+                "symbol": t["symbol"],
+                "price": last,
+                "change_1h": round(change_1h, 2),
+                "change_24h": round(t.get("price_24h_pct", 0), 2),
+                "high_24h": t.get("high_24h", 0),
+                "low_24h": t.get("low_24h", 0),
+                "volume_24h": t["volume_24h"],
+            })
 
         briefing["market_summary"]["top_coins"] = top_coins
 
@@ -388,6 +381,141 @@ class SignalBot:
             "score": score,
             "quality": quality,
             "reasons": reasons,
+        }
+
+    async def analyze_coin(self, query: str) -> dict | None:
+        """단일 코인 심층 분석. 티커 심볼(예: SOL, BTC) 입력."""
+        query = query.strip().upper()
+        # USDT 접미사 붙이기
+        symbol = query if query.endswith("USDT") else query + "USDT"
+
+        now = datetime.now(timezone.utc)
+
+        # 1. 티커 정보
+        tickers = await self._run_sync(self.collector.get_all_usdt_perpetuals)
+        ticker = None
+        for t in tickers:
+            if t["symbol"] == symbol:
+                ticker = t
+                break
+        if not ticker:
+            return None
+
+        # 2. 4H 캔들 + 지표
+        candles = await self._run_sync(
+            self.collector.get_candles,
+            symbol, self.config.signal.primary_interval,
+            start_time=now - timedelta(days=120),
+        )
+        if not candles or len(candles) < 55:
+            return None
+
+        df = candles_to_dataframe(candles)
+        df = add_all_features(df)
+        current = df.iloc[-1]
+
+        # 3. 스코어링 (롱/숏 모두)
+        score_result = self._score_pair(df, symbol)
+
+        # 4. 펀딩비
+        funding_rate = ticker.get("funding_rate", 0)
+
+        # 5. 개별 지표 상세
+        prev_1h = ticker.get("prev_price_1h", 0)
+        last = ticker["last_price"]
+        change_1h = (last - prev_1h) / prev_1h * 100 if prev_1h > 0 else 0
+
+        indicators = {
+            "rsi": round(float(current.get("rsi", 0)), 1) if not pandas_isna(current.get("rsi")) else None,
+            "adx": round(float(current.get("adx", 0)), 1) if not pandas_isna(current.get("adx")) else None,
+            "macd_hist": round(float(current.get("macd_hist", 0)), 4) if not pandas_isna(current.get("macd_hist")) else None,
+            "bb_width": round(float(current.get("bb_width", 0)), 4) if not pandas_isna(current.get("bb_width")) else None,
+            "ema_20": round(float(current.get("ema_20", 0)), 2) if not pandas_isna(current.get("ema_20")) else None,
+            "ema_50": round(float(current.get("ema_50", 0)), 2) if not pandas_isna(current.get("ema_50")) else None,
+            "atr": round(float(current.get("atr", 0)), 4) if not pandas_isna(current.get("atr")) else None,
+            "volume_ratio": round(float(current.get("volume_ratio", 0)), 2) if not pandas_isna(current.get("volume_ratio")) else None,
+            "is_sideways": bool(current.get("is_sideways", False)),
+        }
+
+        # 6. EMA 위치 판단
+        close = float(current.get("close", 0))
+        ema_20 = indicators["ema_20"] or 0
+        ema_50 = indicators["ema_50"] or 0
+        if ema_20 > 0 and ema_50 > 0:
+            if close > ema_20 > ema_50:
+                ema_position = "강세 정배열 (가격 > EMA20 > EMA50)"
+            elif close < ema_20 < ema_50:
+                ema_position = "약세 역배열 (가격 < EMA20 < EMA50)"
+            elif close > ema_20:
+                ema_position = "단기 상승 (가격 > EMA20)"
+            elif close < ema_20:
+                ema_position = "단기 하락 (가격 < EMA20)"
+            else:
+                ema_position = "중립"
+        else:
+            ema_position = "데이터 부족"
+
+        # 7. 매수/매도 판단
+        if score_result:
+            direction = score_result["direction"]
+            score = score_result["score"]
+            reasons = score_result["reasons"]
+        else:
+            direction = "neutral"
+            score = 0
+            reasons = []
+
+        # 종합 판단
+        if indicators["is_sideways"]:
+            verdict = "관망"
+            verdict_reason = "횡보장 구간 — 추세 부재로 진입 비추"
+        elif score >= 4:
+            verdict = "적극 매수" if direction == "long" else "적극 매도(숏)"
+            verdict_reason = f"{score}/7점 — 강한 시그널"
+        elif score >= 3:
+            verdict = "매수 고려" if direction == "long" else "매도(숏) 고려"
+            verdict_reason = f"{score}/7점 — 시그널 양호"
+        elif score >= 2:
+            verdict = "조건부 매수" if direction == "long" else "조건부 매도(숏)"
+            verdict_reason = f"{score}/7점 — 추가 확인 필요"
+        elif score == 1:
+            verdict = "관망 (약한 신호)"
+            verdict_reason = f"1/7점 — 근거 부족"
+        else:
+            verdict = "관망"
+            verdict_reason = "시그널 없음"
+
+        atr_val = indicators["atr"] or 0
+        entry = close
+        if direction == "long" and score >= 2:
+            sl = round(close - atr_val * 1.5, 2)
+            tp = round(close + atr_val * 3.0, 2)
+        elif direction == "short" and score >= 2:
+            sl = round(close + atr_val * 1.5, 2)
+            tp = round(close - atr_val * 3.0, 2)
+        else:
+            sl = None
+            tp = None
+
+        return {
+            "symbol": symbol,
+            "price": last,
+            "change_1h": round(change_1h, 2),
+            "change_24h": round(ticker.get("price_24h_pct", 0), 2),
+            "high_24h": ticker.get("high_24h", 0),
+            "low_24h": ticker.get("low_24h", 0),
+            "volume_24h": ticker["volume_24h"],
+            "funding_rate": funding_rate,
+            "indicators": indicators,
+            "ema_position": ema_position,
+            "direction": direction,
+            "score": score,
+            "reasons": reasons,
+            "verdict": verdict,
+            "verdict_reason": verdict_reason,
+            "entry": entry,
+            "sl": sl,
+            "tp": tp,
         }
 
     async def monitor_position(self) -> None:

@@ -99,6 +99,12 @@ class TelegramCommandHandler:
         if method_name:
             handler = getattr(self, method_name)
             await handler(update, context)
+            return
+
+        # 티커 심볼 입력 감지 (영문 1~10자, 예: SOL, BTC, ETH)
+        upper = text.upper()
+        if upper.isalpha() and 1 <= len(upper) <= 10:
+            await self._cmd_analyze_coin(update, context, upper)
 
     async def _callback_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """인라인 버튼 콜백 처리."""
@@ -227,6 +233,31 @@ class TelegramCommandHandler:
         else:
             await update.message.reply_text("현재 청산 시그널 대기 상태가 아닙니다.")
 
+    async def _cmd_analyze_coin(self, update: Update, context: ContextTypes.DEFAULT_TYPE, symbol: str = "") -> None:
+        """티커 심볼 입력 → 코인 심층 분석."""
+        if not self._check_auth(update):
+            return
+        bot = self._bot_ref
+        if not bot:
+            await update.message.reply_text("봇이 초기화되지 않았습니다.")
+            return
+
+        if not symbol:
+            await update.message.reply_text("심볼을 입력해주세요. (예: SOL, BTC, ETH)")
+            return
+
+        await update.message.reply_text(f"\U0001f50d {symbol} 분석 중...")
+        try:
+            analysis = await bot.analyze_coin(symbol)
+            if analysis is None:
+                await update.message.reply_text(f"'{symbol}' 코인을 찾을 수 없거나 데이터가 부족합니다.")
+                return
+            text = bot.reporter.format_coin_analysis(analysis)
+            await update.message.reply_text(text, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Coin analysis error: {e}", exc_info=True)
+            await update.message.reply_text(f"분석 실패: {e}")
+
     async def _cmd_briefing(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """현황 — 즉시 시장 브리핑."""
         if not self._check_auth(update):
@@ -299,6 +330,7 @@ class TelegramCommandHandler:
             "패스 \u2014 시그널 스킵\n"
             "홀딩 \u2014 계속 보유\n"
             "현황 \u2014 시장 브리핑 (즉시)\n"
+            "SOL, BTC 등 \u2014 코인 심층분석\n"
             "상태 \u2014 현재 봇 상태\n"
             "성과 \u2014 시그널 정확도\n"
             "도움말 \u2014 이 메시지\n\n"

@@ -220,6 +220,12 @@ class BybitCollector:
                     "symbol": t["symbol"],
                     "volume_24h": float(t.get("turnover24h", 0)),
                     "last_price": float(t.get("lastPrice", 0)),
+                    "mark_price": float(t.get("markPrice", 0)),
+                    "price_24h_pct": float(t.get("price24hPcnt", 0)) * 100,
+                    "high_24h": float(t.get("highPrice24h", 0)),
+                    "low_24h": float(t.get("lowPrice24h", 0)),
+                    "prev_price_1h": float(t.get("prevPrice1h", 0)),
+                    "funding_rate": float(t.get("fundingRate", 0)),
                 }
                 for t in tickers
                 if t["symbol"].endswith("USDT")

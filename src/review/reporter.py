@@ -233,19 +233,24 @@ class Reporter:
             for coin in market_summary.get("top_coins", []):
                 symbol = coin["symbol"].replace("USDT", "")
                 price = coin["price"]
-                chg = coin["change_4h"]
-                chg_icon = "\U0001f7e2" if chg >= 0 else "\U0001f534"
+                chg_1h = coin.get("change_1h", 0)
+                chg_24h = coin.get("change_24h", 0)
+                chg_icon = "\U0001f7e2" if chg_1h >= 0 else "\U0001f534"
                 vol_str = f"${coin['volume_24h']/1e9:.1f}B" if coin['volume_24h'] >= 1e9 else f"${coin['volume_24h']/1e6:.0f}M"
 
-                if price >= 1000:
-                    price_str = f"{price:,.0f}"
-                elif price >= 1:
+                # 거래소와 동일한 소수점 표시
+                if price >= 100:
                     price_str = f"{price:,.2f}"
-                else:
+                elif price >= 1:
                     price_str = f"{price:.4f}"
+                else:
+                    price_str = f"{price:.6f}"
 
                 lines.append(
-                    f"  {chg_icon} <b>{symbol}</b> {price_str} ({chg:+.2f}%) vol {vol_str}"
+                    f"  {chg_icon} <b>{symbol}</b> ${price_str}"
+                )
+                lines.append(
+                    f"      1h {chg_1h:+.2f}% | 24h {chg_24h:+.2f}% | {vol_str}"
                 )
             lines.append("")
 
@@ -283,6 +288,145 @@ class Reporter:
             lines.append(f"<b>\U0001f440 관찰 페어</b>: {pair_str}")
 
         return "\n".join(lines)
+
+    def format_coin_analysis(self, analysis: dict) -> str:
+        """단일 코인 심층 분석 메시지 포맷."""
+        sym = analysis["symbol"].replace("USDT", "")
+        price = analysis["price"]
+        ind = analysis["indicators"]
+
+        # 가격 포맷
+        if price >= 100:
+            price_str = f"${price:,.2f}"
+        elif price >= 1:
+            price_str = f"${price:.4f}"
+        else:
+            price_str = f"${price:.6f}"
+
+        lines = [
+            f"<b>\U0001f50e {sym} 심층 분석</b>",
+            "",
+            f"<b>\U0001f4b0 현재가</b>: {price_str}",
+            f"  1h {analysis['change_1h']:+.2f}% | 24h {analysis['change_24h']:+.2f}%",
+            f"  24h 고가 {analysis['high_24h']:,.2f} / 저가 {analysis['low_24h']:,.2f}",
+            "",
+            "<b>\U0001f4ca 기술적 지표</b>",
+        ]
+
+        # RSI
+        rsi = ind.get("rsi")
+        if rsi is not None:
+            if rsi >= 70:
+                rsi_label = "과매수 \u26a0\ufe0f"
+            elif rsi <= 30:
+                rsi_label = "과매도 \u26a0\ufe0f"
+            elif rsi >= 60:
+                rsi_label = "강세"
+            elif rsi <= 40:
+                rsi_label = "약세"
+            else:
+                rsi_label = "중립"
+            lines.append(f"  RSI: {rsi} ({rsi_label})")
+
+        # ADX
+        adx = ind.get("adx")
+        if adx is not None:
+            if adx >= 40:
+                adx_label = "강한 추세"
+            elif adx >= 20:
+                adx_label = "추세 있음"
+            else:
+                adx_label = "추세 약함"
+            lines.append(f"  ADX: {adx} ({adx_label})")
+
+        # MACD
+        macd = ind.get("macd_hist")
+        if macd is not None:
+            macd_label = "상승 모멘텀" if macd > 0 else "하락 모멘텀"
+            lines.append(f"  MACD 히스토그램: {macd:+.4f} ({macd_label})")
+
+        # EMA 배열
+        lines.append(f"  EMA: {analysis['ema_position']}")
+
+        # 볼린저
+        bb = ind.get("bb_width")
+        if bb is not None:
+            bb_label = "변동성 확대" if bb > 0.1 else "수축 (돌파 임박)" if bb < 0.03 else "보통"
+            lines.append(f"  볼린저 폭: {bb:.4f} ({bb_label})")
+
+        # 거래량
+        vol_ratio = ind.get("volume_ratio")
+        if vol_ratio is not None:
+            vol_label = f"평균 대비 {vol_ratio}배"
+            if vol_ratio >= 2:
+                vol_label += " \U0001f525"
+            lines.append(f"  거래량: {vol_label}")
+
+        # 횡보 여부
+        if ind.get("is_sideways"):
+            lines.append(f"  \u26a0\ufe0f 횡보장 감지")
+
+        # 펀딩비
+        fr = analysis.get("funding_rate", 0)
+        if fr != 0:
+            fr_label = "롱과열" if fr > 0.0005 else "숏과열" if fr < -0.0005 else "중립"
+            lines.append(f"  펀딩비: {fr*100:+.4f}% ({fr_label})")
+
+        lines.append("")
+
+        # 스코어링
+        score = analysis["score"]
+        direction = analysis["direction"]
+        dir_kr = "\U0001f4c8 롱" if direction == "long" else "\U0001f4c9 숏" if direction == "short" else "\u23f8 중립"
+
+        score_bar = "\U0001f7e2" * score + "\u26aa" * (7 - score)
+        lines.append(f"<b>\U0001f3af 스코어링</b>: {dir_kr} {score}/7")
+        lines.append(f"  {score_bar}")
+
+        if analysis["reasons"]:
+            for r in analysis["reasons"]:
+                lines.append(f"  \u2022 {r}")
+
+        lines.append("")
+
+        # 최종 판단
+        verdict = analysis["verdict"]
+        verdict_reason = analysis["verdict_reason"]
+
+        if "적극" in verdict:
+            v_icon = "\U0001f7e2\U0001f7e2"
+        elif "고려" in verdict:
+            v_icon = "\U0001f7e2"
+        elif "조건부" in verdict:
+            v_icon = "\U0001f7e1"
+        else:
+            v_icon = "\u26aa"
+
+        lines.append(f"<b>{v_icon} 판단: {verdict}</b>")
+        lines.append(f"  {verdict_reason}")
+
+        # TP/SL
+        sl = analysis.get("sl")
+        tp = analysis.get("tp")
+        if sl is not None and tp is not None:
+            entry = analysis["entry"]
+            lines.append("")
+            lines.append("<b>\U0001f4cd 진입 시 참고</b>")
+
+            if entry >= 100:
+                lines.append(f"  진입가: {entry:,.2f}")
+                lines.append(f"  손절가: {sl:,.2f} ({_pct(entry, sl)})")
+                lines.append(f"  목표가: {tp:,.2f} ({_pct(entry, tp)})")
+            else:
+                lines.append(f"  진입가: {entry:.4f}")
+                lines.append(f"  손절가: {sl:.4f} ({_pct(entry, sl)})")
+                lines.append(f"  목표가: {tp:.4f} ({_pct(entry, tp)})")
+
+        return "\n".join(lines)
+
+    async def send_coin_analysis(self, analysis: dict) -> None:
+        text = self.format_coin_analysis(analysis)
+        await self._send(text)
 
     async def send_hourly_briefing(self, briefing: dict) -> None:
         text = self.format_hourly_briefing(briefing)
