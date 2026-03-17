@@ -31,10 +31,24 @@ class BybitCollector:
     """Collects market data from Bybit."""
 
     MAX_CANDLES_PER_REQUEST = 200
-    RATE_LIMIT_SLEEP = 0.1  # seconds between requests
+    RATE_LIMIT_SLEEP = 0.15  # seconds between requests
+    RATE_LIMIT_RETRY_SLEEP = 2  # seconds to wait on rate limit hit
 
     def __init__(self, client: ExchangeClient):
         self.client = client
+
+    def _call_api(self, method, **kwargs):
+        """API 호출 + rate limit 자동 재시도."""
+        for attempt in range(3):
+            try:
+                return method(**kwargs)
+            except Exception as e:
+                if "rate limit" in str(e).lower() or "x-bapi" in str(e).lower() or "403" in str(e):
+                    logger.warning(f"Rate limit hit, retry {attempt+1}/3...")
+                    time.sleep(self.RATE_LIMIT_RETRY_SLEEP * (attempt + 1))
+                    continue
+                raise
+        return method(**kwargs)  # 마지막 시도
 
     @classmethod
     def from_config(cls, api_key: str, api_secret: str, testnet: bool = False) -> "BybitCollector":
@@ -59,7 +73,7 @@ class BybitCollector:
 
         while current_start < end_ms:
             try:
-                response = self.client.get_kline(
+                response = self._call_api(self.client.get_kline,
                     category="linear",
                     symbol=symbol,
                     interval=interval,
@@ -131,7 +145,7 @@ class BybitCollector:
 
         while cursor_end > start_ms:
             try:
-                response = self.client.get_funding_rate_history(
+                response = self._call_api(self.client.get_funding_rate_history,
                     category="linear",
                     symbol=symbol,
                     endTime=cursor_end,
@@ -189,7 +203,7 @@ class BybitCollector:
             if start_time:
                 kwargs["startTime"] = int(start_time.timestamp() * 1000)
 
-            response = self.client.get_open_interest(
+            response = self._call_api(self.client.get_open_interest,
                 **kwargs,
             )
 
@@ -213,7 +227,7 @@ class BybitCollector:
     def get_all_usdt_perpetuals(self) -> list[dict]:
         """Fetch all USDT perpetual futures tickers with 24h volume."""
         try:
-            response = self.client.get_tickers(category="linear")
+            response = self._call_api(self.client.get_tickers, category="linear")
             tickers = response.get("result", {}).get("list", [])
             usdt_perps = [
                 {

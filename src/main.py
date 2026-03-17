@@ -418,11 +418,11 @@ class SignalBot:
         if not ticker:
             return None
 
-        # 2. 4H 캔들 + 지표
+        # 2. 4H 캔들 + 지표 (55개면 충분 → 60일)
         candles = await self._run_sync(
             self.collector.get_candles,
             symbol, self.config.signal.primary_interval,
-            start_time=now - timedelta(days=120),
+            start_time=now - timedelta(days=60),
         )
         if not candles or len(candles) < 55:
             return None
@@ -437,14 +437,7 @@ class SignalBot:
         # 4. 펀딩비
         funding_rate = ticker.get("funding_rate", 0)
 
-        # 4.5. 캔들 스캔 후 최신 가격 재조회
-        fresh_tickers = await self._run_sync(self.collector.get_all_usdt_perpetuals)
-        for ft in fresh_tickers:
-            if ft["symbol"] == symbol:
-                ticker = ft
-                break
-
-        # 5. 개별 지표 상세
+        # 5. 개별 지표 상세 (ticker는 이미 최신 — 중복 호출 제거)
         prev_1h = ticker.get("prev_price_1h", 0)
         last = ticker["mark_price"]  # mark_price가 거래소 UI와 동일
         change_1h = (last - prev_1h) / prev_1h * 100 if prev_1h > 0 else 0
