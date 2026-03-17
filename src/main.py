@@ -443,13 +443,13 @@ class SignalBot:
         ema_50 = indicators["ema_50"] or 0
         if ema_20 > 0 and ema_50 > 0:
             if close > ema_20 > ema_50:
-                ema_position = "강세 정배열 (가격 > EMA20 > EMA50)"
+                ema_position = "강세 정배열 (가격→EMA20→EMA50)"
             elif close < ema_20 < ema_50:
-                ema_position = "약세 역배열 (가격 < EMA20 < EMA50)"
+                ema_position = "약세 역배열 (EMA50→EMA20→가격)"
             elif close > ema_20:
-                ema_position = "단기 상승 (가격 > EMA20)"
+                ema_position = "단기 상승 (가격이 EMA20 위)"
             elif close < ema_20:
-                ema_position = "단기 하락 (가격 < EMA20)"
+                ema_position = "단기 하락 (가격이 EMA20 아래)"
             else:
                 ema_position = "중립"
         else:
