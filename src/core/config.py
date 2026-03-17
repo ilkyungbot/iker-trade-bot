@@ -23,7 +23,7 @@ class BybitConfig:
         return cls(
             api_key=os.getenv("BYBIT_API_KEY", ""),
             api_secret=os.getenv("BYBIT_API_SECRET", ""),
-            testnet=os.getenv("BYBIT_TESTNET", "false").lower() == "true",
+            testnet=False,  # 항상 메인넷 사용 (시세 조회 전용)
         )
 
 
