@@ -1,0 +1,108 @@
+"""
+수동 포지션 관리자.
+사용자가 Telegram에서 등록한 포지션의 CRUD를 SQLite로 관리.
+"""
+import logging
+import sqlite3
+from datetime import datetime, timezone
+
+from core.types import ManualPosition, Side
+
+logger = logging.getLogger(__name__)
+
+
+class PositionManager:
+    """복수 수동 포지션 관리. SQLite 저장."""
+
+    def __init__(self, db_path: str = "signal_bot.db"):
+        self._db_path = db_path
+        self._init_db()
+
+    def _init_db(self) -> None:
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS manual_positions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    entry_price REAL NOT NULL,
+                    leverage REAL NOT NULL,
+                    created_at TEXT NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1
+                )
+            """)
+
+    def open_position(
+        self,
+        chat_id: str,
+        symbol: str,
+        side: Side,
+        entry_price: float,
+        leverage: float,
+    ) -> ManualPosition:
+        now = datetime.now(timezone.utc)
+        with sqlite3.connect(self._db_path) as conn:
+            cursor = conn.execute(
+                "INSERT INTO manual_positions "
+                "(chat_id, symbol, side, entry_price, leverage, created_at, is_active) "
+                "VALUES (?, ?, ?, ?, ?, ?, 1)",
+                (chat_id, symbol, side.value, entry_price, leverage, now.isoformat()),
+            )
+            pos_id = cursor.lastrowid
+        return ManualPosition(
+            id=pos_id,
+            chat_id=chat_id,
+            symbol=symbol,
+            side=side,
+            entry_price=entry_price,
+            leverage=leverage,
+            created_at=now,
+        )
+
+    def get_active_positions(self, chat_id: str) -> list[ManualPosition]:
+        with sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, chat_id, symbol, side, entry_price, leverage, created_at "
+                "FROM manual_positions WHERE chat_id = ? AND is_active = 1",
+                (chat_id,),
+            ).fetchall()
+        return [self._row_to_position(r) for r in rows]
+
+    def get_all_active_positions(self) -> list[ManualPosition]:
+        with sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, chat_id, symbol, side, entry_price, leverage, created_at "
+                "FROM manual_positions WHERE is_active = 1",
+            ).fetchall()
+        return [self._row_to_position(r) for r in rows]
+
+    def close_position(self, position_id: int, chat_id: str) -> bool:
+        with sqlite3.connect(self._db_path) as conn:
+            cursor = conn.execute(
+                "UPDATE manual_positions SET is_active = 0 "
+                "WHERE id = ? AND chat_id = ? AND is_active = 1",
+                (position_id, chat_id),
+            )
+            return cursor.rowcount > 0
+
+    def close_position_by_symbol(self, chat_id: str, symbol: str) -> bool:
+        with sqlite3.connect(self._db_path) as conn:
+            cursor = conn.execute(
+                "UPDATE manual_positions SET is_active = 0 "
+                "WHERE chat_id = ? AND symbol = ? AND is_active = 1",
+                (chat_id, symbol),
+            )
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def _row_to_position(row: tuple) -> ManualPosition:
+        return ManualPosition(
+            id=row[0],
+            chat_id=row[1],
+            symbol=row[2],
+            side=Side(row[3]),
+            entry_price=row[4],
+            leverage=row[5],
+            created_at=datetime.fromisoformat(row[6]),
+        )
