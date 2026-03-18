@@ -116,12 +116,16 @@ class PositionMonitor:
         self._last_events.pop(position_id, None)
 
     def _calc_pnl_pct(self, pos: ManualPosition, current_price: float) -> float:
+        if pos.entry_price == 0:
+            return 0.0
         price_change_pct = (current_price - pos.entry_price) / pos.entry_price * 100
         if pos.side == Side.SHORT:
             price_change_pct = -price_change_pct
         return price_change_pct * pos.leverage
 
     def _calc_liquidation_distance(self, pos: ManualPosition, current_price: float) -> float:
+        if pos.leverage == 0 or pos.entry_price == 0:
+            return 0.0
         if pos.side == Side.LONG:
             liq_price = pos.entry_price * (1 - 1 / pos.leverage)
             if current_price <= liq_price:

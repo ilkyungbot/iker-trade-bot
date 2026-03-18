@@ -32,6 +32,7 @@ class PositionManager:
                     is_active INTEGER NOT NULL DEFAULT 1
                 )
             """)
+            conn.execute("PRAGMA journal_mode=WAL")
 
     def open_position(
         self,
@@ -41,6 +42,10 @@ class PositionManager:
         entry_price: float,
         leverage: float,
     ) -> ManualPosition:
+        if entry_price <= 0:
+            raise ValueError("진입가는 0보다 커야 합니다.")
+        if leverage <= 0 or leverage > 125:
+            raise ValueError("레버리지는 1~125 사이여야 합니다.")
         now = datetime.now(timezone.utc)
         with sqlite3.connect(self._db_path) as conn:
             cursor = conn.execute(
@@ -88,12 +93,19 @@ class PositionManager:
 
     def close_position_by_symbol(self, chat_id: str, symbol: str) -> bool:
         with sqlite3.connect(self._db_path) as conn:
-            cursor = conn.execute(
-                "UPDATE manual_positions SET is_active = 0 "
-                "WHERE chat_id = ? AND symbol = ? AND is_active = 1",
+            row = conn.execute(
+                "SELECT id FROM manual_positions "
+                "WHERE chat_id = ? AND symbol = ? AND is_active = 1 "
+                "ORDER BY id LIMIT 1",
                 (chat_id, symbol),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute(
+                "UPDATE manual_positions SET is_active = 0 WHERE id = ?",
+                (row[0],),
             )
-            return cursor.rowcount > 0
+            return True
 
     @staticmethod
     def _row_to_position(row: tuple) -> ManualPosition:
