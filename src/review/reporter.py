@@ -5,6 +5,7 @@ Layer 6: Telegram reporting — 시그널 봇 전용.
 """
 
 import logging
+import math
 from datetime import datetime
 from typing import Protocol
 
@@ -36,9 +37,37 @@ _QUALITY_ICON = {
     SignalQuality.WEAK: "\U0001f534 약함",
 }
 
+_EVENT_ICON = {
+    "bullish_signal": "\U0001f4c8",
+    "bearish_signal": "\U0001f4c9",
+    "position_check": "\U0001f6a8",
+    "sell_recommendation": "\U0001f4b0",
+    "hold_recommendation": "\u23f3",
+    "buy_recommendation": "\U0001f6d2",
+}
+
+_EVENT_KR = {
+    "bullish_signal": "상승 신호",
+    "bearish_signal": "하락 신호",
+    "position_check": "포지션 체크",
+    "sell_recommendation": "매도 추천",
+    "hold_recommendation": "홀딩 추천",
+    "buy_recommendation": "매수 추천",
+}
+
 
 def _strategy_kr(name: str) -> str:
     return _STRATEGY_KR.get(name, name)
+
+
+def _format_price(price: float) -> str:
+    """거래소와 동일한 소수점 표시."""
+    if price >= 100:
+        return f"{price:,.2f}"
+    elif price >= 1:
+        return f"{price:.4f}"
+    else:
+        return f"{price:.6f}"
 
 
 def _sign(v: float) -> str:
@@ -434,6 +463,71 @@ class Reporter:
 
     async def send_alert(self, message: str) -> None:
         await self._send(f"<b>\U0001f6a8 알림</b>\n{message}")
+
+    def format_position_event(self, event, position) -> str:
+        """포지션 이벤트 Telegram 메시지."""
+        from strategy.position_monitor import PositionEvent
+        from core.types import ManualPosition, Side
+
+        icon = _EVENT_ICON.get(event.event_type, "\u2139\ufe0f")
+        event_kr = _EVENT_KR.get(event.event_type, event.event_type)
+        side_kr = "롱" if position.side == Side.LONG else "숏"
+        pnl_icon = "\u2705" if event.pnl_percent > 0 else "\u26a0\ufe0f" if event.pnl_percent < -10 else "\u2796"
+
+        lines = [
+            f"<b>{icon} {event_kr} | {position.symbol}</b>",
+            "",
+            f"방향: {side_kr} {position.leverage}x",
+            f"평단: {_format_price(position.entry_price)}",
+            f"PnL: {pnl_icon} {event.pnl_percent:+.1f}%",
+            "",
+            f"{event.message}",
+        ]
+
+        if event.severity == "critical":
+            lines.append("")
+            lines.append("<b>\u26a0\ufe0f 즉시 확인이 필요합니다!</b>")
+
+        return "\n".join(lines)
+
+    def format_position_registered(self, position) -> str:
+        """포지션 등록 확인 메시지."""
+        from core.types import Side
+        side_kr = "롱" if position.side == Side.LONG else "숏"
+        return (
+            f"<b>\u2705 포지션 등록 완료</b>\n\n"
+            f"종목: {position.symbol}\n"
+            f"방향: {side_kr}\n"
+            f"평단: {_format_price(position.entry_price)}\n"
+            f"레버리지: {position.leverage}x\n\n"
+            f"모니터링을 시작합니다. 청산 시 '청산'을 입력하세요."
+        )
+
+    def format_position_closed(self, position, final_pnl: float | None = None) -> str:
+        """포지션 청산 메시지."""
+        from core.types import Side
+        side_kr = "롱" if position.side == Side.LONG else "숏"
+        msg = (
+            f"<b>\U0001f6aa 포지션 청산</b>\n\n"
+            f"종목: {position.symbol} ({side_kr} {position.leverage}x)\n"
+            f"평단: {_format_price(position.entry_price)}\n"
+        )
+        if final_pnl is not None and not math.isnan(final_pnl):
+            msg += f"최종 PnL: {final_pnl:+.1f}%\n"
+        msg += "\n모니터링을 종료합니다."
+        return msg
+
+    async def send_position_event(self, event, position) -> None:
+        text = self.format_position_event(event, position)
+        await self._send(text)
+
+    async def send_position_registered(self, position) -> None:
+        text = self.format_position_registered(position)
+        await self._send(text)
+
+    async def send_position_closed(self, position, final_pnl=None) -> None:
+        text = self.format_position_closed(position, final_pnl)
+        await self._send(text)
 
     async def _send(self, text: str, reply_markup=None) -> None:
         if self.sender and self.chat_id:

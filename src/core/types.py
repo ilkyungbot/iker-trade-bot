@@ -122,3 +122,16 @@ class PairInfo:
     atr_percent: float  # ATR / price
     correlation_to_btc: float
     score: float  # ranking score
+
+
+@dataclass
+class ManualPosition:
+    """사용자가 수동 등록한 포지션."""
+    id: int | None  # DB auto-increment
+    chat_id: str
+    symbol: str  # e.g., "BTCUSDT"
+    side: Side  # LONG or SHORT
+    entry_price: float
+    leverage: float
+    created_at: datetime
+    is_active: bool = True

@@ -7,7 +7,7 @@ Telegram command handler — 대화형 시그널 봇.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 try:
     from telegram import Update, CallbackQuery
@@ -19,7 +19,7 @@ try:
 except ImportError:
     HAS_TELEGRAM = False
 
-from core.types import ConversationState
+from core.types import ConversationState, Side
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,15 @@ _KR_COMMANDS: dict[str, str] = {
     "현황": "_cmd_briefing",
     "성과": "_cmd_performance",
     "도움말": "_cmd_help",
+    "신규 포지션": "_cmd_new_position",
+    "청산": "_cmd_close_position",
+}
+
+_POSITION_FLOW_STEPS = {
+    "ask_symbol": "어떤 코인인가요? (예: BTC, ETH, SOL)",
+    "ask_side": "롱인가요, 숏인가요? (롱/숏)",
+    "ask_entry": "평단가를 입력해주세요. (숫자만)",
+    "ask_leverage": "레버리지 배율을 입력해주세요. (예: 10)",
 }
 
 
@@ -95,6 +104,25 @@ class TelegramCommandHandler:
         if not self._check_auth(update):
             return
         text = (update.message.text or "").strip()
+
+        # 대화 흐름 중이면 흐름 처리 우선 (단, 명령어나 "취소"면 흐름 탈출)
+        flow_step = context.user_data.get("position_flow")
+        if flow_step:
+            if text == "취소":
+                context.user_data.pop("position_flow", None)
+                context.user_data.pop("position_data", None)
+                await update.message.reply_text("포지션 등록을 취소했습니다.")
+                return
+            # 기존 명령어면 흐름 중단 후 명령 실행
+            if text in _KR_COMMANDS:
+                context.user_data.pop("position_flow", None)
+                context.user_data.pop("position_data", None)
+                handler = getattr(self, _KR_COMMANDS[text])
+                await handler(update, context)
+                return
+            await self._handle_position_flow(update, context, text)
+            return
+
         method_name = _KR_COMMANDS.get(text)
         if method_name:
             handler = getattr(self, method_name)
@@ -305,6 +333,14 @@ class TelegramCommandHandler:
             if session.user_entry_price:
                 msg += f"사용자 진입가: {session.user_entry_price:,.0f}\n"
 
+        if hasattr(bot, "position_manager"):
+            positions = bot.position_manager.get_active_positions(self.chat_id)
+            if positions:
+                msg += "\n<b>\U0001f4cb 수동 포지션</b>\n"
+                for p in positions:
+                    side_kr = "롱" if p.side == Side.LONG else "숏"
+                    msg += f"• {p.symbol} ({side_kr} {p.leverage}x) 평단 {p.entry_price:,.2f}\n"
+
         await update.message.reply_text(msg, parse_mode="HTML")
 
     async def _cmd_performance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -333,8 +369,171 @@ class TelegramCommandHandler:
             "SOL, BTC 등 \u2014 코인 심층분석\n"
             "상태 \u2014 현재 봇 상태\n"
             "성과 \u2014 시그널 정확도\n"
+            "신규 포지션 \u2014 수동 포지션 등록\n"
+            "청산 \u2014 포지션 청산\n"
+            "취소 \u2014 포지션 등록 취소\n"
             "도움말 \u2014 이 메시지\n\n"
             "<b>슬래시 명령어</b>\n"
             "/status /performance /help"
         )
         await update.message.reply_text(msg, parse_mode="HTML")
+
+    async def _cmd_new_position(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """신규 포지션 등록 시작."""
+        if not self._check_auth(update):
+            return
+        context.user_data["position_flow"] = "ask_symbol"
+        context.user_data["position_data"] = {}
+        await update.message.reply_text(
+            "\U0001f4dd <b>신규 포지션 등록</b>\n\n" + _POSITION_FLOW_STEPS["ask_symbol"],
+            parse_mode="HTML",
+        )
+
+    async def _cmd_close_position(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """포지션 청산."""
+        if not self._check_auth(update):
+            return
+        bot = self._bot_ref
+        if not bot or not hasattr(bot, "position_manager"):
+            await update.message.reply_text("봇이 초기화되지 않았습니다.")
+            return
+
+        positions = bot.position_manager.get_active_positions(self.chat_id)
+        if not positions:
+            await update.message.reply_text("활성 포지션이 없습니다.")
+            return
+
+        if len(positions) == 1:
+            pos = positions[0]
+            final_pnl = None
+            try:
+                now = datetime.now(timezone.utc)
+                candles = await bot._run_sync(
+                    bot.collector.get_candles, pos.symbol, "1",
+                    start_time=now - timedelta(minutes=5),
+                )
+                if candles:
+                    current_price = candles[-1].close
+                    price_change = (current_price - pos.entry_price) / pos.entry_price * 100
+                    if pos.side == Side.SHORT:
+                        price_change = -price_change
+                    final_pnl = price_change * pos.leverage
+            except Exception:
+                pass
+
+            bot.position_manager.close_position(pos.id, self.chat_id)
+            if hasattr(bot, "position_monitor"):
+                bot.position_monitor.clear_position(pos.id)
+            text = bot.reporter.format_position_closed(pos, final_pnl)
+            await update.message.reply_text(text, parse_mode="HTML")
+        else:
+            context.user_data["position_flow"] = "ask_close_which"
+            lines = ["\U0001f4dd <b>어떤 포지션을 청산할까요?</b>\n"]
+            for p in positions:
+                side_kr = "롱" if p.side == Side.LONG else "숏"
+                lines.append(f"• {p.symbol} ({side_kr} {p.leverage}x) — 평단 {p.entry_price:,.2f}")
+            lines.append("\n코인명을 입력해주세요. (예: BTC)")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+    async def _handle_position_flow(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+        """신규 포지션 대화 흐름 단계별 처리."""
+        step = context.user_data.get("position_flow")
+        data = context.user_data.get("position_data", {})
+        bot = self._bot_ref
+
+        if step == "ask_symbol":
+            symbol = text.strip().upper()
+            if not symbol or not symbol.replace("USDT", "").isalpha():
+                await update.message.reply_text("올바른 코인명을 입력해주세요. (예: BTC, ETH, SOL)")
+                return
+            if not symbol.endswith("USDT"):
+                symbol += "USDT"
+            data["symbol"] = symbol
+            context.user_data["position_data"] = data
+            context.user_data["position_flow"] = "ask_side"
+            await update.message.reply_text(_POSITION_FLOW_STEPS["ask_side"])
+
+        elif step == "ask_side":
+            text_lower = text.strip().lower()
+            if text_lower in ("롱", "long", "매수"):
+                data["side"] = Side.LONG
+            elif text_lower in ("숏", "short", "매도"):
+                data["side"] = Side.SHORT
+            else:
+                await update.message.reply_text("'롱' 또는 '숏'으로 입력해주세요.")
+                return
+            context.user_data["position_data"] = data
+            context.user_data["position_flow"] = "ask_entry"
+            await update.message.reply_text(_POSITION_FLOW_STEPS["ask_entry"])
+
+        elif step == "ask_entry":
+            try:
+                entry_price = float(text.strip().replace(",", ""))
+                if entry_price <= 0:
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text("올바른 숫자를 입력해주세요.")
+                return
+            data["entry_price"] = entry_price
+            context.user_data["position_data"] = data
+            context.user_data["position_flow"] = "ask_leverage"
+            await update.message.reply_text(_POSITION_FLOW_STEPS["ask_leverage"])
+
+        elif step == "ask_leverage":
+            try:
+                leverage = float(text.strip().replace("배", "").replace("x", ""))
+                if leverage <= 0 or leverage > 125:
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text("1~125 사이 숫자를 입력해주세요.")
+                return
+            data["leverage"] = leverage
+
+            if bot and hasattr(bot, "position_manager"):
+                pos = bot.position_manager.open_position(
+                    self.chat_id, data["symbol"], data["side"],
+                    data["entry_price"], data["leverage"],
+                )
+                text_msg = bot.reporter.format_position_registered(pos)
+                await update.message.reply_text(text_msg, parse_mode="HTML")
+            else:
+                await update.message.reply_text("포지션 매니저가 초기화되지 않았습니다.")
+
+            context.user_data.pop("position_flow", None)
+            context.user_data.pop("position_data", None)
+
+        elif step == "ask_close_which":
+            symbol = text.strip().upper()
+            if not symbol.endswith("USDT"):
+                symbol += "USDT"
+            if bot and hasattr(bot, "position_manager"):
+                positions = bot.position_manager.get_active_positions(self.chat_id)
+                target = next((p for p in positions if p.symbol == symbol), None)
+                if target:
+                    # PnL 계산
+                    final_pnl = None
+                    try:
+                        now = datetime.now(timezone.utc)
+                        candles = await bot._run_sync(
+                            bot.collector.get_candles, target.symbol, "1",
+                            start_time=now - timedelta(minutes=5),
+                        )
+                        if candles:
+                            current_price = candles[-1].close
+                            price_change = (current_price - target.entry_price) / target.entry_price * 100
+                            if target.side == Side.SHORT:
+                                price_change = -price_change
+                            final_pnl = price_change * target.leverage
+                    except Exception:
+                        pass
+
+                    bot.position_manager.close_position(target.id, self.chat_id)
+                    if hasattr(bot, "position_monitor"):
+                        bot.position_monitor.clear_position(target.id)
+                    text_msg = bot.reporter.format_position_closed(target, final_pnl)
+                    await update.message.reply_text(text_msg, parse_mode="HTML")
+                else:
+                    await update.message.reply_text(f"{symbol} 포지션을 찾을 수 없습니다. 다시 입력해주세요.")
+                    return  # Don't clear flow — let user retry
+            context.user_data.pop("position_flow", None)
+            context.user_data.pop("position_data", None)
