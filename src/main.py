@@ -35,6 +35,8 @@ from strategy.trend_following import TrendFollowingStrategy
 from strategy.funding_rate import FundingRateStrategy
 from conversation.state_machine import ConversationStateMachine
 from conversation.signal_tracker import SignalTracker
+from conversation.position_manager import PositionManager
+from strategy.position_monitor import PositionMonitor
 from execution.circuit_breaker import SignalCooldown
 from review.reporter import Reporter, TelegramBotSender
 from review.telegram_commands import TelegramCommandHandler
@@ -69,6 +71,8 @@ class SignalBot:
         # Conversation layer
         self.state_machine = ConversationStateMachine()
         self.signal_tracker = SignalTracker()
+        self.position_manager = PositionManager()
+        self.position_monitor = PositionMonitor()
 
         # Cooldown & API error tracking
         self.cooldown = SignalCooldown(cooldown_minutes=config.signal.signal_cooldown_minutes)
@@ -111,6 +115,9 @@ class SignalBot:
 
         # 시그널 결과 추적: 매 시간
         scheduler.add_job(self.check_signal_outcomes, "cron", minute=30)
+
+        # 수동 포지션 이벤트 모니터링: 매 5분
+        scheduler.add_job(self.monitor_manual_positions, "cron", minute="*/5")
 
         # 일간 리포트: 매일 00:05 UTC
         scheduler.add_job(self.daily_report, "cron", hour=0, minute=5)
@@ -634,6 +641,60 @@ class SignalBot:
                 )
             except Exception as e:
                 logger.error(f"Error checking signal outcome: {e}")
+
+    async def monitor_manual_positions(self) -> None:
+        """수동 포지션 이벤트 감지 + 푸시."""
+        positions = self.position_manager.get_all_active_positions()
+        if not positions:
+            return
+
+        now = datetime.now(timezone.utc)
+
+        for pos in positions:
+            try:
+                # 4H 캔들 + 지표
+                candles = await self._run_sync(
+                    self.collector.get_candles,
+                    pos.symbol, self.config.signal.primary_interval,
+                    start_time=now - timedelta(days=30),
+                )
+                if not candles or len(candles) < 10:
+                    continue
+
+                df = candles_to_dataframe(candles)
+                df = add_all_features(df)
+
+                # 현재가
+                recent = await self._run_sync(
+                    self.collector.get_candles,
+                    pos.symbol, "1",
+                    start_time=now - timedelta(minutes=5),
+                )
+                if not recent:
+                    continue
+                current_price = recent[-1].close
+
+                # 펀딩비
+                funding_rate = 0.0
+                try:
+                    rates = await self._run_sync(
+                        self.collector.get_funding_rates,
+                        pos.symbol, start_time=now - timedelta(hours=8),
+                    )
+                    if rates:
+                        funding_rate = rates[-1].rate
+                except Exception:
+                    pass
+
+                # 이벤트 감지
+                events = self.position_monitor.detect_events(pos, df, current_price, funding_rate)
+
+                # 이벤트 발송
+                for event in events:
+                    await self.reporter.send_position_event(event, pos)
+
+            except Exception as e:
+                logger.error(f"Manual position monitor error for {pos.symbol}: {e}", exc_info=True)
 
     async def daily_report(self) -> None:
         """일간 시그널 리포트."""

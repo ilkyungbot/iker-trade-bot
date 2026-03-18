@@ -321,6 +321,14 @@ class TelegramCommandHandler:
             if session.user_entry_price:
                 msg += f"사용자 진입가: {session.user_entry_price:,.0f}\n"
 
+        if hasattr(bot, "position_manager"):
+            positions = bot.position_manager.get_active_positions(self.chat_id)
+            if positions:
+                msg += "\n<b>\U0001f4cb 수동 포지션</b>\n"
+                for p in positions:
+                    side_kr = "롱" if p.side == Side.LONG else "숏"
+                    msg += f"• {p.symbol} ({side_kr} {p.leverage}x) 평단 {p.entry_price:,.2f}\n"
+
         await update.message.reply_text(msg, parse_mode="HTML")
 
     async def _cmd_performance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
