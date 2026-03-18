@@ -105,9 +105,21 @@ class TelegramCommandHandler:
             return
         text = (update.message.text or "").strip()
 
-        # 대화 흐름 중이면 흐름 처리 우선
+        # 대화 흐름 중이면 흐름 처리 우선 (단, 명령어나 "취소"면 흐름 탈출)
         flow_step = context.user_data.get("position_flow")
         if flow_step:
+            if text == "취소":
+                context.user_data.pop("position_flow", None)
+                context.user_data.pop("position_data", None)
+                await update.message.reply_text("포지션 등록을 취소했습니다.")
+                return
+            # 기존 명령어면 흐름 중단 후 명령 실행
+            if text in _KR_COMMANDS:
+                context.user_data.pop("position_flow", None)
+                context.user_data.pop("position_data", None)
+                handler = getattr(self, _KR_COMMANDS[text])
+                await handler(update, context)
+                return
             await self._handle_position_flow(update, context, text)
             return
 
@@ -359,6 +371,7 @@ class TelegramCommandHandler:
             "성과 \u2014 시그널 정확도\n"
             "신규 포지션 \u2014 수동 포지션 등록\n"
             "청산 \u2014 포지션 청산\n"
+            "취소 \u2014 포지션 등록 취소\n"
             "도움말 \u2014 이 메시지\n\n"
             "<b>슬래시 명령어</b>\n"
             "/status /performance /help"
@@ -430,6 +443,9 @@ class TelegramCommandHandler:
 
         if step == "ask_symbol":
             symbol = text.strip().upper()
+            if not symbol or not symbol.replace("USDT", "").isalpha():
+                await update.message.reply_text("올바른 코인명을 입력해주세요. (예: BTC, ETH, SOL)")
+                return
             if not symbol.endswith("USDT"):
                 symbol += "USDT"
             data["symbol"] = symbol
@@ -438,7 +454,7 @@ class TelegramCommandHandler:
             await update.message.reply_text(_POSITION_FLOW_STEPS["ask_side"])
 
         elif step == "ask_side":
-            text_lower = text.strip()
+            text_lower = text.strip().lower()
             if text_lower in ("롱", "long", "매수"):
                 data["side"] = Side.LONG
             elif text_lower in ("숏", "short", "매도"):
@@ -494,12 +510,30 @@ class TelegramCommandHandler:
                 positions = bot.position_manager.get_active_positions(self.chat_id)
                 target = next((p for p in positions if p.symbol == symbol), None)
                 if target:
+                    # PnL 계산
+                    final_pnl = None
+                    try:
+                        now = datetime.now(timezone.utc)
+                        candles = await bot._run_sync(
+                            bot.collector.get_candles, target.symbol, "1",
+                            start_time=now - timedelta(minutes=5),
+                        )
+                        if candles:
+                            current_price = candles[-1].close
+                            price_change = (current_price - target.entry_price) / target.entry_price * 100
+                            if target.side == Side.SHORT:
+                                price_change = -price_change
+                            final_pnl = price_change * target.leverage
+                    except Exception:
+                        pass
+
                     bot.position_manager.close_position(target.id, self.chat_id)
                     if hasattr(bot, "position_monitor"):
                         bot.position_monitor.clear_position(target.id)
-                    text_msg = bot.reporter.format_position_closed(target)
+                    text_msg = bot.reporter.format_position_closed(target, final_pnl)
                     await update.message.reply_text(text_msg, parse_mode="HTML")
                 else:
-                    await update.message.reply_text(f"{symbol} 포지션을 찾을 수 없습니다.")
+                    await update.message.reply_text(f"{symbol} 포지션을 찾을 수 없습니다. 다시 입력해주세요.")
+                    return  # Don't clear flow — let user retry
             context.user_data.pop("position_flow", None)
             context.user_data.pop("position_data", None)
