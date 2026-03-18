@@ -91,7 +91,29 @@ class PositionMonitor:
                     severity="info", pnl_percent=pnl_pct,
                 ))
 
+        events = self._filter_cooldown(position.id, events)
         return events
+
+    def _filter_cooldown(self, position_id: int, events: list[PositionEvent], cooldown_minutes: int = 30) -> list[PositionEvent]:
+        """동일 이벤트 타입에 대해 쿨다운 적용."""
+        now = datetime.now(timezone.utc)
+        if position_id not in self._last_events:
+            self._last_events[position_id] = {}
+
+        filtered = []
+        for event in events:
+            last_time = self._last_events[position_id].get(event.event_type)
+            # critical은 쿨다운 10분, 나머지 30분
+            cd = 10 if event.severity == "critical" else cooldown_minutes
+            if last_time is None or (now - last_time).total_seconds() >= cd * 60:
+                filtered.append(event)
+                self._last_events[position_id][event.event_type] = now
+
+        return filtered
+
+    def clear_position(self, position_id: int) -> None:
+        """포지션 청산 시 쿨다운 기록 제거."""
+        self._last_events.pop(position_id, None)
 
     def _calc_pnl_pct(self, pos: ManualPosition, current_price: float) -> float:
         price_change_pct = (current_price - pos.entry_price) / pos.entry_price * 100

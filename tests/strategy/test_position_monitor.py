@@ -96,3 +96,27 @@ def test_buy_recommendation_long_dip():
     events = monitor.detect_events(pos, df, current_price=66000, funding_rate=0)
     event_types = [e.event_type for e in events]
     assert "buy_recommendation" in event_types
+
+
+def test_cooldown_prevents_duplicate():
+    monitor = PositionMonitor()
+    pos = _make_position(leverage=20, entry=67500)
+    df = _make_df(close=64500)
+    # 첫 번째: 이벤트 발생
+    events1 = monitor.detect_events(pos, df, current_price=64500, funding_rate=0)
+    assert len(events1) > 0
+    # 두 번째: 쿨다운으로 차단
+    events2 = monitor.detect_events(pos, df, current_price=64500, funding_rate=0)
+    assert len(events2) == 0
+
+
+def test_clear_position_resets_cooldown():
+    monitor = PositionMonitor()
+    pos = _make_position(leverage=20, entry=67500)
+    df = _make_df(close=64500)
+    events1 = monitor.detect_events(pos, df, current_price=64500, funding_rate=0)
+    assert len(events1) > 0
+    # clear 후 다시 이벤트 발생
+    monitor.clear_position(pos.id)
+    events2 = monitor.detect_events(pos, df, current_price=64500, funding_rate=0)
+    assert len(events2) > 0
