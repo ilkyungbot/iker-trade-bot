@@ -5,6 +5,7 @@ Layer 6: Telegram reporting — 시그널 봇 전용.
 """
 
 import logging
+import math
 from datetime import datetime
 from typing import Protocol
 
@@ -57,6 +58,16 @@ _EVENT_KR = {
 
 def _strategy_kr(name: str) -> str:
     return _STRATEGY_KR.get(name, name)
+
+
+def _format_price(price: float) -> str:
+    """거래소와 동일한 소수점 표시."""
+    if price >= 100:
+        return f"{price:,.2f}"
+    elif price >= 1:
+        return f"{price:.4f}"
+    else:
+        return f"{price:.6f}"
 
 
 def _sign(v: float) -> str:
@@ -467,7 +478,7 @@ class Reporter:
             f"<b>{icon} {event_kr} | {position.symbol}</b>",
             "",
             f"방향: {side_kr} {position.leverage}x",
-            f"평단: {position.entry_price:,.2f}",
+            f"평단: {_format_price(position.entry_price)}",
             f"PnL: {pnl_icon} {event.pnl_percent:+.1f}%",
             "",
             f"{event.message}",
@@ -487,7 +498,7 @@ class Reporter:
             f"<b>\u2705 포지션 등록 완료</b>\n\n"
             f"종목: {position.symbol}\n"
             f"방향: {side_kr}\n"
-            f"평단: {position.entry_price:,.2f}\n"
+            f"평단: {_format_price(position.entry_price)}\n"
             f"레버리지: {position.leverage}x\n\n"
             f"모니터링을 시작합니다. 청산 시 '청산'을 입력하세요."
         )
@@ -499,9 +510,9 @@ class Reporter:
         msg = (
             f"<b>\U0001f6aa 포지션 청산</b>\n\n"
             f"종목: {position.symbol} ({side_kr} {position.leverage}x)\n"
-            f"평단: {position.entry_price:,.2f}\n"
+            f"평단: {_format_price(position.entry_price)}\n"
         )
-        if final_pnl is not None:
+        if final_pnl is not None and not math.isnan(final_pnl):
             msg += f"최종 PnL: {final_pnl:+.1f}%\n"
         msg += "\n모니터링을 종료합니다."
         return msg
