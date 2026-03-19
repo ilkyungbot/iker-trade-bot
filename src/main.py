@@ -36,7 +36,7 @@ from strategy.funding_rate import FundingRateStrategy
 from conversation.state_machine import ConversationStateMachine
 from conversation.signal_tracker import SignalTracker
 from conversation.position_manager import PositionManager
-from strategy.position_monitor import PositionMonitor, PositionMonitorV2
+from strategy.position_monitor import PositionMonitorV2
 from strategy.edge_detector import EdgeDetector
 from strategy.market_regime import MarketRegimeClassifier
 from execution.exit_manager import ExitManager
@@ -78,7 +78,6 @@ class SignalBot:
         self.state_machine = ConversationStateMachine()
         self.signal_tracker = SignalTracker()
         self.position_manager = PositionManager()
-        self.position_monitor = PositionMonitor()
         self.position_monitor_v2 = PositionMonitorV2()
         self.portfolio_guard = PortfolioGuard()
         self.trading_journal = TradingJournal()
@@ -676,12 +675,12 @@ class SignalBot:
                 if regime:
                     last = self._last_regime.get(pos.symbol)
                     if last and last != regime.regime.value:
-                        await self.reporter.send_regime_change(regime)
+                        await self.reporter.send_regime_change(regime, position=pos)
                     self._last_regime[pos.symbol] = regime.regime.value
 
                 # Exit signals 발송
                 for sig in result["exit_signals"]:
-                    await self.reporter.send_exit_signal_v2(sig)
+                    await self.reporter.send_exit_signal_v2(sig, position=pos)
 
                 # Edge signals 발송
                 for edge in result["edge_signals"]:

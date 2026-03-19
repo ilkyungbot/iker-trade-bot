@@ -99,7 +99,9 @@ class TradingJournal:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         with sqlite3.connect(self._db_path) as conn:
             rows = conn.execute(
-                "SELECT side, leverage, realized_pnl_pct, realized_pnl_usdt, exit_reason, regime FROM trading_journal WHERE chat_id = ? AND exit_time IS NOT NULL AND entry_time > ?",
+                "SELECT side, leverage, realized_pnl_pct, realized_pnl_usdt, exit_reason, regime "
+                "FROM trading_journal WHERE chat_id = ? AND exit_time IS NOT NULL AND entry_time > ? "
+                "ORDER BY entry_time ASC",
                 (chat_id, cutoff)
             ).fetchall()
 
@@ -133,6 +135,7 @@ class TradingJournal:
 
         return {
             "total_trades": total,
+            "wins": wins,
             "win_rate": round(wins / total * 100, 1) if total > 0 else 0,
             "total_pnl_usdt": round(total_pnl, 2),
             "avg_pnl_pct": round(sum(r[2] or 0 for r in rows) / total, 1) if total > 0 else 0,

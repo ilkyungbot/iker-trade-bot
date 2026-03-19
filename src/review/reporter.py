@@ -673,7 +673,7 @@ class Reporter:
         lines = [
             "<b>\U0001f4cb 트레이딩 리포트</b>",
             "",
-            f"매매: {total}건 (승 {int(total * report.get('win_rate', 0) / 100)} / 패 {total - int(total * report.get('win_rate', 0) / 100)})",
+            f"매매: {total}건 (승 {report.get('wins', 0)} / 패 {total - report.get('wins', 0)})",
             f"승률: {report.get('win_rate', 0)}%",
             f"총 PnL: {report.get('total_pnl_usdt', 0):+.1f} USDT",
             f"평균 PnL: {report.get('avg_pnl_pct', 0):+.1f}%",

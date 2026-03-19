@@ -57,14 +57,15 @@ class ExitManager:
                     suggested_action="지금 바로 청산하세요. 손절가를 이미 지났습니다.",
                 )
             )
-        elif sl_distance_pct < 3.0:
+        elif sl_distance_pct < 3.0 and sl_distance_pct > 0:
             severity = "critical" if sl_distance_pct < 1.0 else "warning"
+            leveraged_loss = sl_distance_pct * position.leverage
             signals.append(
                 ExitSignal(
                     signal_type="sl_warning",
                     position_id=position.id,
                     symbol=position.symbol,
-                    message=f"손절가까지 {sl_distance_pct:.1f}% 남음",
+                    message=f"손절가까지 {sl_distance_pct:.1f}% 남음 (레버리지 반영 -{leveraged_loss:.1f}%)",
                     severity=severity,
                     pnl_percent=pnl_pct,
                     suggested_action="손절가 도달 시 즉시 청산하세요.",
@@ -203,5 +204,5 @@ class ExitManager:
 
     def restore_state(self, state: dict) -> None:
         """저장된 상태를 복원."""
-        self._partial_tp_triggered = set(state.get("partial_tp_triggered", []))
-        self._trailing_highs = dict(state.get("trailing_highs", {}))
+        self._partial_tp_triggered = set(int(x) for x in state.get("partial_tp_triggered", []))
+        self._trailing_highs = {int(k): v for k, v in state.get("trailing_highs", {}).items()}

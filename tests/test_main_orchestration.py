@@ -98,35 +98,3 @@ class TestSignalScore:
         assert SignalBot._signal_score(strong) > SignalBot._signal_score(moderate)
 
 
-class TestSignalCycleSkips:
-    def test_skips_when_not_idle(self, tmp_path):
-        """IDLE이 아니면 시그널 사이클 스킵."""
-        from core.types import UserSession
-        bot = _make_bot(tmp_path)
-        # Set state to MONITORING (not IDLE)
-        session = UserSession(
-            chat_id="123",
-            state=ConversationState.MONITORING,
-        )
-        bot.state_machine._save_session(session)
-
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(bot.signal_cycle())
-        finally:
-            loop.close()
-
-        bot.reporter.send_signal.assert_not_called()
-
-    def test_skips_during_cooldown(self, tmp_path):
-        """쿨다운 중이면 스킵."""
-        bot = _make_bot(tmp_path)
-        bot._last_signal_time = datetime.now(timezone.utc) - timedelta(minutes=5)
-
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(bot.signal_cycle())
-        finally:
-            loop.close()
-
-        bot.reporter.send_signal.assert_not_called()

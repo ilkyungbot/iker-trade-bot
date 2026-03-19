@@ -334,6 +334,13 @@ class TelegramCommandHandler:
             bot.position_manager.close_position(pos.id, self.chat_id)
             if hasattr(bot, "position_monitor"):
                 bot.position_monitor.clear_position(pos.id)
+            if hasattr(bot, "trading_journal") and final_pnl is not None:
+                try:
+                    candles_data = await bot._run_sync(bot.collector.get_candles, pos.symbol, "1", start_time=datetime.now(timezone.utc) - timedelta(minutes=5))
+                    exit_price = candles_data[-1].close if candles_data else pos.entry_price
+                except Exception:
+                    exit_price = pos.entry_price
+                bot.trading_journal.record_exit(pos.id, exit_price, "manual")
             text = bot.reporter.format_position_closed(pos, final_pnl)
             await update.message.reply_text(text, parse_mode="HTML")
         else:
@@ -525,13 +532,16 @@ class TelegramCommandHandler:
             )
 
         elif step == "confirm_low_rr":
-            if text.strip() in ("예", "네", "ㅇ", "yes"):
+            answer = text.strip().lower()
+            if answer in ("예", "네", "ㅇ", "yes", "y"):
                 context.user_data["position_flow"] = "ask_reason"
                 await update.message.reply_text(_POSITION_FLOW_STEPS["ask_reason"])
-            else:
-                await update.message.reply_text("포지션 등록을 취소했습니다. 익절가를 재설정하려면 '신규 포지션'으로 다시 시작하세요.")
+            elif answer in ("아니오", "아니", "ㄴ", "no", "n"):
+                await update.message.reply_text("포지션 등록을 취소했습니다.")
                 context.user_data.pop("position_flow", None)
                 context.user_data.pop("position_data", None)
+            else:
+                await update.message.reply_text("'예' 또는 '아니오'로 입력해주세요.")
             return
 
         elif step == "ask_reason":
@@ -606,6 +616,13 @@ class TelegramCommandHandler:
                     bot.position_manager.close_position(target.id, self.chat_id)
                     if hasattr(bot, "position_monitor"):
                         bot.position_monitor.clear_position(target.id)
+                    if hasattr(bot, "trading_journal") and final_pnl is not None:
+                        try:
+                            candles_data = await bot._run_sync(bot.collector.get_candles, target.symbol, "1", start_time=datetime.now(timezone.utc) - timedelta(minutes=5))
+                            exit_price = candles_data[-1].close if candles_data else target.entry_price
+                        except Exception:
+                            exit_price = target.entry_price
+                        bot.trading_journal.record_exit(target.id, exit_price, "manual")
                     text_msg = bot.reporter.format_position_closed(target, final_pnl)
                     await update.message.reply_text(text_msg, parse_mode="HTML")
                 else:

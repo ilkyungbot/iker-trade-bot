@@ -50,12 +50,16 @@ class PositionManager:
         margin_usdt: float | None = None,
         entry_reason: str = "",
     ) -> ManualPosition:
-        if stop_loss is None:
-            raise ValueError("손절가(stop_loss)는 필수입니다.")
+        if stop_loss is None or stop_loss <= 0:
+            raise ValueError("손절가(stop_loss)는 0보다 큰 값이어야 합니다.")
         if entry_price <= 0:
             raise ValueError("진입가는 0보다 커야 합니다.")
         if leverage <= 0 or leverage > 125:
             raise ValueError("레버리지는 1~125 사이여야 합니다.")
+        if side == Side.LONG and stop_loss >= entry_price:
+            raise ValueError("롱 포지션의 손절가는 진입가보다 낮아야 합니다.")
+        if side == Side.SHORT and stop_loss <= entry_price:
+            raise ValueError("숏 포지션의 손절가는 진입가보다 높아야 합니다.")
         now = datetime.now(timezone.utc)
         with sqlite3.connect(self._db_path) as conn:
             cursor = conn.execute(
