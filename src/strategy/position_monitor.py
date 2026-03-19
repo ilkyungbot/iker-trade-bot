@@ -82,7 +82,42 @@ class PositionMonitorV2:
         if len(df) >= 50:
             result["regime"] = self.regime_classifier.classify(df, btc_df)
 
+        # 쿨다운 필터: 동일 알림 반복 방지
+        result["exit_signals"] = self._filter_exit_cooldown(position.id, result["exit_signals"])
+        result["edge_signals"] = self._filter_edge_cooldown(position.id, result["edge_signals"])
+
         return result
+
+    def _filter_exit_cooldown(self, position_id: int, signals: list[ExitSignal]) -> list[ExitSignal]:
+        """ExitSignal 쿨다운. critical=10분, 나머지=30분."""
+        now = datetime.now(timezone.utc)
+        if position_id not in self._last_events:
+            self._last_events[position_id] = {}
+
+        filtered = []
+        for sig in signals:
+            key = f"exit:{sig.signal_type}"
+            last = self._last_events[position_id].get(key)
+            cd_minutes = 10 if sig.severity == "critical" else 30
+            if last is None or (now - last).total_seconds() >= cd_minutes * 60:
+                filtered.append(sig)
+                self._last_events[position_id][key] = now
+        return filtered
+
+    def _filter_edge_cooldown(self, position_id: int, signals: list[EdgeSignal]) -> list[EdgeSignal]:
+        """EdgeSignal 쿨다운. 동일 signal_type 30분."""
+        now = datetime.now(timezone.utc)
+        if position_id not in self._last_events:
+            self._last_events[position_id] = {}
+
+        filtered = []
+        for sig in signals:
+            key = f"edge:{sig.signal_type}"
+            last = self._last_events[position_id].get(key)
+            if last is None or (now - last).total_seconds() >= 30 * 60:
+                filtered.append(sig)
+                self._last_events[position_id][key] = now
+        return filtered
 
     def clear_position(self, position_id: int) -> None:
         self.exit_manager.clear_position(position_id)
