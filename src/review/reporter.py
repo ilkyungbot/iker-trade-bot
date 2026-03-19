@@ -203,32 +203,9 @@ class Reporter:
 
         return "\n".join(lines)
 
-    def get_signal_keyboard(self):
-        """시그널 응답 인라인 키보드."""
-        if not HAS_TELEGRAM:
-            return None
-        return InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("잡았다 \u2705", callback_data="entered"),
-                InlineKeyboardButton("패스 \u274c", callback_data="pass"),
-            ]
-        ])
-
-    def get_exit_keyboard(self):
-        """청산 응답 인라인 키보드."""
-        if not HAS_TELEGRAM:
-            return None
-        return InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("팔았다 \u2705", callback_data="exited"),
-                InlineKeyboardButton("홀딩 계속 \u23f3", callback_data="hold"),
-            ]
-        ])
-
     async def send_signal(self, msg: SignalMessage) -> None:
         text = self.format_signal_message(msg)
-        keyboard = self.get_signal_keyboard()
-        await self._send(text, reply_markup=keyboard)
+        await self._send(text)
 
     async def send_monitoring_update(self, symbol: str, direction: str, entry: float, current: float, sl: float, tp: float) -> None:
         text = self.format_monitoring_update(symbol, direction, entry, current, sl, tp)
@@ -236,8 +213,7 @@ class Reporter:
 
     async def send_exit_signal(self, symbol: str, direction: str, reason: str) -> None:
         text = self.format_exit_signal(symbol, direction, reason)
-        keyboard = self.get_exit_keyboard()
-        await self._send(text, reply_markup=keyboard)
+        await self._send(text)
 
     async def send_weekly_accuracy(self, report: dict) -> None:
         text = self.format_weekly_accuracy(report)

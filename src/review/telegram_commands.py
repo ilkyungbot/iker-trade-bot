@@ -25,10 +25,6 @@ logger = logging.getLogger(__name__)
 
 # Korean text → handler method name mapping
 _KR_COMMANDS: dict[str, str] = {
-    "잡았다": "_cmd_entered",
-    "팔았다": "_cmd_exited",
-    "패스": "_cmd_pass",
-    "홀딩": "_cmd_hold",
     "상태": "_cmd_status",
     "현황": "_cmd_briefing",
     "성과": "_cmd_performance",
@@ -135,7 +131,7 @@ class TelegramCommandHandler:
             await self._cmd_analyze_coin(update, context, upper)
 
     async def _callback_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """인라인 버튼 콜백 처리."""
+        """인라인 버튼 콜백 처리 (레거시 버튼은 무시)."""
         query: CallbackQuery = update.callback_query
         if not query:
             return
@@ -143,123 +139,6 @@ class TelegramCommandHandler:
 
         if not self._check_auth(update):
             return
-
-        data = query.data
-        if data == "entered":
-            await self._handle_entered(query)
-        elif data == "pass":
-            await self._handle_pass(query)
-        elif data == "exited":
-            await self._handle_exited(query)
-        elif data == "hold":
-            await self._handle_hold(query)
-
-    async def _handle_entered(self, query: CallbackQuery) -> None:
-        bot = self._bot_ref
-        if not bot:
-            return
-        success = bot.state_machine.user_entered(self.chat_id)
-        if success:
-            await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text(
-                "\u2705 <b>진입 확인!</b>\n포지션 모니터링을 시작합니다.\n매도 시 '팔았다' 또는 버튼을 눌러주세요.",
-                parse_mode="HTML",
-            )
-        else:
-            await query.message.reply_text("현재 상태에서 진입 확인이 불가합니다.")
-
-    async def _handle_pass(self, query: CallbackQuery) -> None:
-        bot = self._bot_ref
-        if not bot:
-            return
-        success = bot.state_machine.user_passed(self.chat_id)
-        if success:
-            await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text("\u274c 시그널을 패스했습니다. 다음 시그널을 기다립니다.")
-        else:
-            await query.message.reply_text("현재 상태에서 패스가 불가합니다.")
-
-    async def _handle_exited(self, query: CallbackQuery) -> None:
-        bot = self._bot_ref
-        if not bot:
-            return
-        success = bot.state_machine.user_exited(self.chat_id)
-        if success:
-            await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text("\u2705 <b>청산 확인!</b>\n다음 시그널을 기다립니다.", parse_mode="HTML")
-        else:
-            await query.message.reply_text("현재 상태에서 청산 확인이 불가합니다.")
-
-    async def _handle_hold(self, query: CallbackQuery) -> None:
-        bot = self._bot_ref
-        if not bot:
-            return
-        success = bot.state_machine.user_hold(self.chat_id)
-        if success:
-            await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text("\u23f3 홀딩 계속! 모니터링을 유지합니다.")
-        else:
-            await query.message.reply_text("현재 상태에서 홀딩이 불가합니다.")
-
-    # --- 텍스트 커맨드 핸들러 ---
-
-    async def _cmd_entered(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._check_auth(update):
-            return
-        bot = self._bot_ref
-        if not bot:
-            await update.message.reply_text("봇이 초기화되지 않았습니다.")
-            return
-        success = bot.state_machine.user_entered(self.chat_id)
-        if success:
-            await update.message.reply_text(
-                "\u2705 <b>진입 확인!</b>\n포지션 모니터링을 시작합니다.",
-                parse_mode="HTML",
-            )
-        else:
-            await update.message.reply_text("현재 활성 시그널이 없거나 이미 진입 상태입니다.")
-
-    async def _cmd_exited(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._check_auth(update):
-            return
-        bot = self._bot_ref
-        if not bot:
-            await update.message.reply_text("봇이 초기화되지 않았습니다.")
-            return
-        success = bot.state_machine.user_exited(self.chat_id)
-        if success:
-            await update.message.reply_text(
-                "\u2705 <b>청산 확인!</b>\n다음 시그널을 기다립니다.",
-                parse_mode="HTML",
-            )
-        else:
-            await update.message.reply_text("현재 모니터링 중인 포지션이 없습니다.")
-
-    async def _cmd_pass(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._check_auth(update):
-            return
-        bot = self._bot_ref
-        if not bot:
-            await update.message.reply_text("봇이 초기화되지 않았습니다.")
-            return
-        success = bot.state_machine.user_passed(self.chat_id)
-        if success:
-            await update.message.reply_text("\u274c 시그널을 패스했습니다.")
-        else:
-            await update.message.reply_text("현재 대기 중인 시그널이 없습니다.")
-
-    async def _cmd_hold(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._check_auth(update):
-            return
-        bot = self._bot_ref
-        if not bot:
-            await update.message.reply_text("봇이 초기화되지 않았습니다.")
-            return
-        success = bot.state_machine.user_hold(self.chat_id)
-        if success:
-            await update.message.reply_text("\u23f3 홀딩 계속! 모니터링을 유지합니다.")
-        else:
-            await update.message.reply_text("현재 청산 시그널 대기 상태가 아닙니다.")
 
     async def _cmd_analyze_coin(self, update: Update, context: ContextTypes.DEFAULT_TYPE, symbol: str = "") -> None:
         """티커 심볼 입력 → 코인 심층 분석."""
@@ -313,9 +192,7 @@ class TelegramCommandHandler:
         session = bot.state_machine.get_session(self.chat_id)
         state_kr = {
             ConversationState.IDLE: "\U0001f7e2 대기 중",
-            ConversationState.SIGNAL_SENT: "\U0001f7e1 시그널 발송됨 (응답 대기)",
             ConversationState.MONITORING: "\U0001f4ca 모니터링 중",
-            ConversationState.EXIT_SIGNAL_SENT: "\U0001f534 청산 시그널 대기",
         }
 
         msg = f"<b>\U0001f916 봇 상태</b>\n\n상태: {state_kr.get(session.state, session.state.value)}\n"
@@ -361,16 +238,12 @@ class TelegramCommandHandler:
         msg = (
             "<b>\U0001f916 시그널봇 명령어</b>\n\n"
             "<b>한글 입력</b>\n"
-            "잡았다 \u2014 시그널 진입 확인\n"
-            "팔았다 \u2014 포지션 청산 확인\n"
-            "패스 \u2014 시그널 스킵\n"
-            "홀딩 \u2014 계속 보유\n"
+            "신규 포지션 \u2014 수동 포지션 등록\n"
+            "청산 \u2014 포지션 청산\n"
             "현황 \u2014 시장 브리핑 (즉시)\n"
             "SOL, BTC 등 \u2014 코인 심층분석\n"
             "상태 \u2014 현재 봇 상태\n"
             "성과 \u2014 시그널 정확도\n"
-            "신규 포지션 \u2014 수동 포지션 등록\n"
-            "청산 \u2014 포지션 청산\n"
             "취소 \u2014 포지션 등록 취소\n"
             "도움말 \u2014 이 메시지\n\n"
             "<b>슬래시 명령어</b>\n"
