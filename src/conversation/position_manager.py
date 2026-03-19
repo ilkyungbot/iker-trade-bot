@@ -50,6 +50,8 @@ class PositionManager:
         margin_usdt: float | None = None,
         entry_reason: str = "",
     ) -> ManualPosition:
+        if stop_loss is None:
+            raise ValueError("손절가(stop_loss)는 필수입니다.")
         if entry_price <= 0:
             raise ValueError("진입가는 0보다 커야 합니다.")
         if leverage <= 0 or leverage > 125:

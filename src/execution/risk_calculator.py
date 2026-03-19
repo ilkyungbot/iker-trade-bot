@@ -9,22 +9,6 @@ from __future__ import annotations
 from core.types import Side
 
 
-# ── Round-number offset ──────────────────────────────────────────────
-
-_ROUND_OFFSET = 0.12  # nudge away from .000 levels
-
-
-def _apply_round_offset(price: float, side: Side) -> float:
-    """Shift price away from round numbers (.000 levels).
-
-    For LONG SL (below entry): subtract offset → lower.
-    For SHORT SL (above entry): add offset → higher.
-    """
-    if side == Side.LONG:
-        return price - _ROUND_OFFSET
-    return price + _ROUND_OFFSET
-
-
 # ── Public API ───────────────────────────────────────────────────────
 
 
@@ -36,15 +20,16 @@ def suggest_stop_loss(
 ) -> float:
     """Suggest a stop-loss price based on ATR.
 
-    LONG : entry - 1.5 * ATR, then round-number offset.
-    SHORT: entry + 1.5 * ATR, then round-number offset.
+    LONG : entry - 1.5 * ATR, then percentage-based offset (0.2% of price).
+    SHORT: entry + 1.5 * ATR, then percentage-based offset (0.2% of price).
     """
-    distance = 1.5 * atr
+    offset = entry_price * 0.002  # 0.2% of price to avoid round numbers
     if side == Side.LONG:
-        base = entry_price - distance
+        raw_sl = entry_price - 1.5 * atr
+        return round(raw_sl - offset, 2)
     else:
-        base = entry_price + distance
-    return _apply_round_offset(base, side)
+        raw_sl = entry_price + 1.5 * atr
+        return round(raw_sl + offset, 2)
 
 
 def suggest_take_profit(
