@@ -157,6 +157,24 @@ class TestTimeStop:
         assert len(time_signals) == 0
 
 
+class TestSLBreached:
+    def test_sl_breached_critical(self):
+        """SL 돌파 시 distance=0, critical 시그널."""
+        em = ExitManager()
+        pos = _long_pos(entry=67500, sl=66000, tp=70000)
+        signals = em.check_exits(pos, current_price=65500, atr=500)  # Below SL
+        assert any(s.signal_type == "sl_warning" and s.severity == "critical" for s in signals)
+        assert any("도달/돌파" in s.message for s in signals)
+
+    def test_sl_breached_short(self):
+        """SHORT: SL 돌파 시 distance=0, critical 시그널."""
+        em = ExitManager()
+        pos = _short_pos(entry=100, sl=105, tp=85)
+        signals = em.check_exits(pos, current_price=106, atr=2.0)  # Above SL
+        assert any(s.signal_type == "sl_warning" and s.severity == "critical" for s in signals)
+        assert any("도달/돌파" in s.message for s in signals)
+
+
 class TestEdgeCases:
     def test_no_signals_when_no_sl_tp(self):
         """SL/TP 없으면 시그널 없음."""

@@ -20,6 +20,13 @@ class ExitSignal:
 
 
 class ExitManager:
+    """출구 관리 엔진.
+
+    Note: _partial_tp_triggered와 _trailing_highs는 메모리 기반.
+    봇 재시작 시 리셋됨 — partial_tp가 중복 발생할 수 있음.
+    TODO: DB 기반 영속화 필요.
+    """
+
     def __init__(self) -> None:
         self._partial_tp_triggered: set[int] = set()
         self._trailing_highs: dict[int, float] = {}
@@ -37,7 +44,20 @@ class ExitManager:
 
         # 1. SL warning (approaching stop loss)
         sl_distance_pct = self._calc_sl_distance_pct(position, current_price)
-        if sl_distance_pct < 3.0:
+        if sl_distance_pct == 0:
+            severity = "critical"
+            signals.append(
+                ExitSignal(
+                    signal_type="sl_warning",
+                    position_id=position.id,
+                    symbol=position.symbol,
+                    message="손절가 도달/돌파! 즉시 청산하세요.",
+                    severity=severity,
+                    pnl_percent=pnl_pct,
+                    suggested_action="지금 바로 청산하세요. 손절가를 이미 지났습니다.",
+                )
+            )
+        elif sl_distance_pct < 3.0:
             severity = "critical" if sl_distance_pct < 1.0 else "warning"
             signals.append(
                 ExitSignal(
@@ -141,9 +161,10 @@ class ExitManager:
     ) -> float:
         """Distance to SL as % of current price."""
         if pos.side == Side.LONG:
-            return (current_price - pos.stop_loss) / current_price * 100
+            dist = (current_price - pos.stop_loss) / current_price * 100
         else:
-            return (pos.stop_loss - current_price) / current_price * 100
+            dist = (pos.stop_loss - current_price) / current_price * 100
+        return max(0, dist)  # Clamp: if SL already breached, return 0
 
     def _update_trailing(
         self, pos: ManualPosition, current_price: float
@@ -172,3 +193,15 @@ class ExitManager:
     def clear_position(self, position_id: int) -> None:
         self._partial_tp_triggered.discard(position_id)
         self._trailing_highs.pop(position_id, None)
+
+    def get_state(self) -> dict:
+        """현재 메모리 상태를 직렬화 가능한 dict로 반환 (영속화용)."""
+        return {
+            "partial_tp_triggered": list(self._partial_tp_triggered),
+            "trailing_highs": dict(self._trailing_highs),
+        }
+
+    def restore_state(self, state: dict) -> None:
+        """저장된 상태를 복원."""
+        self._partial_tp_triggered = set(state.get("partial_tp_triggered", []))
+        self._trailing_highs = dict(state.get("trailing_highs", {}))

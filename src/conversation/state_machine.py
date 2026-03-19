@@ -34,6 +34,7 @@ class ConversationStateMachine:
 
     def _init_db(self) -> None:
         with sqlite3.connect(self._db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_sessions (
                     chat_id TEXT PRIMARY KEY,

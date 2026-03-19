@@ -58,6 +58,8 @@ class TradingJournal:
                     regime TEXT DEFAULT ''
                 )
             """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_journal_chat_time ON trading_journal (chat_id, entry_time)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_journal_position ON trading_journal (position_id)")
 
     def record_entry(self, position: ManualPosition, regime: str = "") -> int:
         """Record a new position entry. Returns journal entry ID."""
