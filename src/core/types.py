@@ -26,9 +26,7 @@ class StrategyName(Enum):
 
 class ConversationState(Enum):
     IDLE = "idle"
-    SIGNAL_SENT = "signal_sent"
     MONITORING = "monitoring"
-    EXIT_SIGNAL_SENT = "exit_signal_sent"
 
 
 class SignalQuality(Enum):
@@ -135,3 +133,7 @@ class ManualPosition:
     leverage: float
     created_at: datetime
     is_active: bool = True
+    stop_loss: float | None = None
+    take_profit: float | None = None
+    margin_usdt: float | None = None
+    entry_reason: str = ""

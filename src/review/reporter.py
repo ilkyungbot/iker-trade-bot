@@ -6,7 +6,7 @@ Layer 6: Telegram reporting — 시그널 봇 전용.
 
 import logging
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Protocol
 
 try:
@@ -203,32 +203,9 @@ class Reporter:
 
         return "\n".join(lines)
 
-    def get_signal_keyboard(self):
-        """시그널 응답 인라인 키보드."""
-        if not HAS_TELEGRAM:
-            return None
-        return InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("잡았다 \u2705", callback_data="entered"),
-                InlineKeyboardButton("패스 \u274c", callback_data="pass"),
-            ]
-        ])
-
-    def get_exit_keyboard(self):
-        """청산 응답 인라인 키보드."""
-        if not HAS_TELEGRAM:
-            return None
-        return InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("팔았다 \u2705", callback_data="exited"),
-                InlineKeyboardButton("홀딩 계속 \u23f3", callback_data="hold"),
-            ]
-        ])
-
     async def send_signal(self, msg: SignalMessage) -> None:
         text = self.format_signal_message(msg)
-        keyboard = self.get_signal_keyboard()
-        await self._send(text, reply_markup=keyboard)
+        await self._send(text)
 
     async def send_monitoring_update(self, symbol: str, direction: str, entry: float, current: float, sl: float, tp: float) -> None:
         text = self.format_monitoring_update(symbol, direction, entry, current, sl, tp)
@@ -236,8 +213,7 @@ class Reporter:
 
     async def send_exit_signal(self, symbol: str, direction: str, reason: str) -> None:
         text = self.format_exit_signal(symbol, direction, reason)
-        keyboard = self.get_exit_keyboard()
-        await self._send(text, reply_markup=keyboard)
+        await self._send(text)
 
     async def send_weekly_accuracy(self, report: dict) -> None:
         text = self.format_weekly_accuracy(report)
@@ -467,7 +443,6 @@ class Reporter:
     def format_position_event(self, event, position) -> str:
         """포지션 이벤트 Telegram 메시지."""
         from strategy.position_monitor import PositionEvent
-        from core.types import ManualPosition, Side
 
         icon = _EVENT_ICON.get(event.event_type, "\u2139\ufe0f")
         event_kr = _EVENT_KR.get(event.event_type, event.event_type)
@@ -492,7 +467,6 @@ class Reporter:
 
     def format_position_registered(self, position) -> str:
         """포지션 등록 확인 메시지."""
-        from core.types import Side
         side_kr = "롱" if position.side == Side.LONG else "숏"
         return (
             f"<b>\u2705 포지션 등록 완료</b>\n\n"
@@ -505,7 +479,6 @@ class Reporter:
 
     def format_position_closed(self, position, final_pnl: float | None = None) -> str:
         """포지션 청산 메시지."""
-        from core.types import Side
         side_kr = "롱" if position.side == Side.LONG else "숏"
         msg = (
             f"<b>\U0001f6aa 포지션 청산</b>\n\n"
@@ -527,6 +500,216 @@ class Reporter:
 
     async def send_position_closed(self, position, final_pnl=None) -> None:
         text = self.format_position_closed(position, final_pnl)
+        await self._send(text)
+
+    def format_position_dashboard(self, positions: list, price_data: dict) -> str:
+        """현황 대시보드 포맷.
+
+        positions: list of ManualPosition
+        price_data: {symbol: {"current_price": float, "pnl_pct": float, "pnl_usdt": float | None}}
+        """
+        if not positions:
+            return "<b>\U0001f4ca 내 포지션 현황</b>\n\n활성 포지션이 없습니다."
+
+        lines = ["<b>\U0001f4ca 내 포지션 현황</b>\n"]
+        total_pnl_usdt = 0
+
+        for i, pos in enumerate(positions, 1):
+            side_kr = "롱" if pos.side == Side.LONG else "숏"
+            data = price_data.get(pos.symbol, {})
+            current = data.get("current_price", 0)
+            pnl_pct = data.get("pnl_pct", 0)
+            pnl_usdt = data.get("pnl_usdt")
+
+            pnl_icon = "\u2705" if pnl_pct > 0 else "\u26a0\ufe0f" if pnl_pct < -10 else "\u2796"
+
+            lines.append(f"<b>{i}. {pos.symbol} {side_kr} {pos.leverage}x</b>")
+            if pos.margin_usdt:
+                lines.append(f"   마진: {pos.margin_usdt} USDT")
+
+            price_str = _format_price(current) if current else "조회 중"
+            lines.append(f"   평단 {_format_price(pos.entry_price)} → 현재 {price_str}")
+
+            pnl_str = f"{pnl_pct:+.1f}%"
+            if pnl_usdt is not None:
+                pnl_str += f" ({pnl_usdt:+.1f} USDT)"
+                total_pnl_usdt += pnl_usdt
+            lines.append(f"   PnL: {pnl_icon} {pnl_str}")
+
+            if pos.stop_loss:
+                sl_dist = abs(current - pos.stop_loss) / current * 100 if current else 0
+                lines.append(f"   SL {_format_price(pos.stop_loss)} (-{sl_dist:.1f}%)")
+            if pos.take_profit:
+                tp_dist = abs(pos.take_profit - current) / current * 100 if current else 0
+                lines.append(f"   TP {_format_price(pos.take_profit)} (+{tp_dist:.1f}%)")
+
+            # Show holding time
+            elapsed = datetime.now(timezone.utc) - pos.created_at
+            hours = int(elapsed.total_seconds() / 3600)
+            mins = int((elapsed.total_seconds() % 3600) / 60)
+            lines.append(f"   보유 {hours}h {mins}m")
+
+            if pos.entry_reason:
+                lines.append(f"   논리: \"{pos.entry_reason}\"")
+            lines.append("")
+
+        # Summary
+        lines.append("\u2500" * 20)
+        lines.append(f"총 PnL: {total_pnl_usdt:+.1f} USDT")
+        lines.append(f"활성 포지션: {len(positions)}/3")
+
+        return "\n".join(lines)
+
+    def format_exit_signal_v2(self, signal, position=None) -> str:
+        """3단 구조 알림 포맷."""
+        icon = {"sl_warning": "\U0001f6a8", "partial_tp": "\U0001f4b0", "trailing_stop": "\U0001f4c9", "time_stop": "\u23f0"}.get(signal.signal_type, "\u2139\ufe0f")
+        title = {"sl_warning": "손절 접근", "partial_tp": "1차 익절 도달", "trailing_stop": "트레일링 스탑", "time_stop": "시간 스탑"}.get(signal.signal_type, signal.signal_type)
+
+        lines = [
+            f"<b>{icon} {title} | {signal.symbol}</b>",
+            "",
+            f"<b>[무슨 일이 일어났는가]</b>",
+            f"{signal.message}",
+            f"PnL: {signal.pnl_percent:+.1f}%",
+            "",
+        ]
+
+        if position:
+            side_kr = "롱" if position.side == Side.LONG else "숏"
+            lines.append(f"<b>[내 포지션에 어떤 영향인가]</b>")
+            lines.append(f"{side_kr} {position.leverage}x | 마진 {position.margin_usdt or '?'} USDT")
+            if position.margin_usdt and signal.pnl_percent:
+                pnl_usdt = position.margin_usdt * signal.pnl_percent / 100
+                lines.append(f"예상 손익: {pnl_usdt:+.1f} USDT")
+            lines.append("")
+
+        lines.append(f"<b>[어떻게 하면 되는가]</b>")
+        lines.append(f"{signal.suggested_action}")
+
+        if signal.severity == "critical":
+            lines.append("")
+            lines.append("<b>\u26a0\ufe0f 즉시 확인이 필요합니다!</b>")
+
+        return "\n".join(lines)
+
+    def format_edge_alert(self, edge_signal, position) -> str:
+        """엣지 신호 알림 (OI/펀딩 이상)."""
+        from strategy.edge_detector import EdgeSignal
+
+        side_kr = "롱" if position.side == Side.LONG else "숏"
+
+        # Impact analysis
+        if edge_signal.direction == "bearish" and position.side == Side.LONG:
+            impact = "\u26a0\ufe0f 현재 롱 포지션에 불리한 신호입니다."
+        elif edge_signal.direction == "bullish" and position.side == Side.SHORT:
+            impact = "\u26a0\ufe0f 현재 숏 포지션에 불리한 신호입니다."
+        elif edge_signal.direction == "bearish" and position.side == Side.SHORT:
+            impact = "\u2705 현재 숏 포지션에 유리한 신호입니다."
+        elif edge_signal.direction == "bullish" and position.side == Side.LONG:
+            impact = "\u2705 현재 롱 포지션에 유리한 신호입니다."
+        else:
+            impact = "중립적 신호입니다."
+
+        lines = [
+            f"<b>\u26a1 시장 이상 감지 | {position.symbol}</b>",
+            f"방향: {side_kr} {position.leverage}x",
+            "",
+            f"<b>[무슨 일이 일어났는가]</b>",
+            f"{edge_signal.message}",
+            "",
+            f"<b>[내 포지션에 어떤 영향인가]</b>",
+            f"{impact}",
+            "",
+            f"<b>[어떻게 하면 되는가]</b>",
+        ]
+
+        if edge_signal.direction == "bearish" and position.side == Side.LONG:
+            lines.append("손절가를 타이트하게 조정하거나, 부분 익절을 고려하세요.")
+        elif edge_signal.direction == "bullish" and position.side == Side.SHORT:
+            lines.append("손절가를 타이트하게 조정하거나, 부분 익절을 고려하세요.")
+        else:
+            lines.append("현재 포지션 유지. 추가 변화를 모니터링합니다.")
+
+        return "\n".join(lines)
+
+    def format_regime_change(self, regime_state, position=None) -> str:
+        """레짐 변화 알림 (3단 구조)."""
+        lines = [
+            f"<b>\U0001f30a 시장 레짐 변화</b>",
+            "",
+            f"<b>[무슨 일이 일어났는가]</b>",
+            f"{regime_state.message}",
+            f"ATR 비율: {regime_state.atr_ratio:.2f}",
+            f"BTC 200EMA: {'위 \u2705' if regime_state.btc_above_200ema else '아래 \u26a0\ufe0f'}",
+            "",
+        ]
+        if position:
+            side_kr = "롱" if position.side == Side.LONG else "숏"
+            lines.append(f"<b>[내 포지션에 어떤 영향인가]</b>")
+            if regime_state.regime.value == "low_vol_range":
+                lines.append(f"{side_kr} 포지션 — 횡보장에서 방향성 약화 가능")
+            elif regime_state.regime.value == "high_vol_trend":
+                lines.append(f"{side_kr} 포지션 — 추세장에서 변동성 확대 주의")
+            else:
+                lines.append(f"{side_kr} 포지션 — 레짐 전환 중 주의 필요")
+            lines.append("")
+
+        lines.append(f"<b>[어떻게 하면 되는가]</b>")
+        if regime_state.regime.value == "low_vol_range":
+            lines.append("신규 진입 자제. 기존 포지션 스탑 타이트하게 조정.")
+        elif regime_state.regime.value == "high_vol_trend":
+            lines.append("추세 방향 확인 후 트레일링 스탑 활용.")
+        else:
+            lines.append("포지션 사이즈 50% 축소 고려.")
+
+        return "\n".join(lines)
+
+    def format_journal_report(self, report: dict) -> str:
+        """주간/월간 트레이딩 저널 리포트."""
+        total = report.get("total_trades", 0)
+        if total == 0:
+            return "<b>\U0001f4cb 트레이딩 리포트</b>\n\n거래 내역이 없습니다."
+
+        lines = [
+            "<b>\U0001f4cb 트레이딩 리포트</b>",
+            "",
+            f"매매: {total}건 (승 {report.get('wins', 0)} / 패 {total - report.get('wins', 0)})",
+            f"승률: {report.get('win_rate', 0)}%",
+            f"총 PnL: {report.get('total_pnl_usdt', 0):+.1f} USDT",
+            f"평균 PnL: {report.get('avg_pnl_pct', 0):+.1f}%",
+            f"최대 연속 손실: {report.get('max_consecutive_loss', 0)}건",
+            "",
+        ]
+
+        by_regime = report.get("by_regime", {})
+        if by_regime:
+            lines.append("<b>레짐별 성과</b>")
+            regime_kr = {"high_vol_trend": "추세장", "low_vol_range": "횡보장", "transition": "전환기", "unknown": "미분류"}
+            for regime, stats in by_regime.items():
+                name = regime_kr.get(regime, regime)
+                wr = round(stats["wins"] / stats["trades"] * 100) if stats["trades"] > 0 else 0
+                lines.append(f"  {name}: {stats['trades']}건 승률 {wr}% PnL {stats['pnl']:+.1f}")
+
+        return "\n".join(lines)
+
+    async def send_exit_signal_v2(self, signal, position=None) -> None:
+        text = self.format_exit_signal_v2(signal, position=position)
+        await self._send(text)
+
+    async def send_edge_alert(self, edge_signal, position) -> None:
+        text = self.format_edge_alert(edge_signal, position)
+        await self._send(text)
+
+    async def send_regime_change(self, regime_state, position=None) -> None:
+        text = self.format_regime_change(regime_state, position=position)
+        await self._send(text)
+
+    async def send_position_dashboard(self, positions, price_data) -> None:
+        text = self.format_position_dashboard(positions, price_data)
+        await self._send(text)
+
+    async def send_journal_report(self, report) -> None:
+        text = self.format_journal_report(report)
         await self._send(text)
 
     async def _send(self, text: str, reply_markup=None) -> None:

@@ -104,18 +104,6 @@ class TestWeeklyAccuracy:
         assert "strong" in msg
 
 
-class TestKeyboards:
-    def test_signal_keyboard(self):
-        reporter = Reporter()
-        kb = reporter.get_signal_keyboard()
-        # HAS_TELEGRAM이 False면 None
-        # True면 InlineKeyboardMarkup
-
-    def test_exit_keyboard(self):
-        reporter = Reporter()
-        kb = reporter.get_exit_keyboard()
-
-
 class TestSendIntegration:
     @pytest.mark.anyio
     async def test_send_signal_calls_sender(self):

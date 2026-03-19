@@ -310,8 +310,8 @@ class TestPositionManagerEdgeCases:
 
     def test_duplicate_symbol_allowed(self):
         """Same coin can be registered twice — verify this is the behavior."""
-        self.pm.open_position("123", "BTCUSDT", Side.LONG, 67500, 10)
-        self.pm.open_position("123", "BTCUSDT", Side.SHORT, 68000, 5)
+        self.pm.open_position("123", "BTCUSDT", Side.LONG, 67500, 10, stop_loss=66000)
+        self.pm.open_position("123", "BTCUSDT", Side.SHORT, 68000, 5, stop_loss=69000)
         positions = self.pm.get_active_positions("123")
         assert len(positions) == 2
 
@@ -320,8 +320,8 @@ class TestPositionManagerEdgeCases:
         FIXED: close_position_by_symbol now closes only the FIRST active position.
         If user has 2 BTC positions (LONG + SHORT), only the first gets closed.
         """
-        self.pm.open_position("123", "BTCUSDT", Side.LONG, 67500, 10)
-        self.pm.open_position("123", "BTCUSDT", Side.SHORT, 68000, 5)
+        self.pm.open_position("123", "BTCUSDT", Side.LONG, 67500, 10, stop_loss=66000)
+        self.pm.open_position("123", "BTCUSDT", Side.SHORT, 68000, 5, stop_loss=69000)
         result = self.pm.close_position_by_symbol("123", "BTCUSDT")
         assert result is True
         positions = self.pm.get_active_positions("123")
@@ -333,7 +333,7 @@ class TestPositionManagerEdgeCases:
         assert result is False
 
     def test_close_already_closed_position(self):
-        pos = self.pm.open_position("123", "BTCUSDT", Side.LONG, 67500, 10)
+        pos = self.pm.open_position("123", "BTCUSDT", Side.LONG, 67500, 10, stop_loss=66000)
         self.pm.close_position(pos.id, "123")
         # Close again
         result = self.pm.close_position(pos.id, "123")
@@ -341,7 +341,7 @@ class TestPositionManagerEdgeCases:
 
     def test_close_wrong_chat_id(self):
         """Cannot close another user's position."""
-        pos = self.pm.open_position("123", "BTCUSDT", Side.LONG, 67500, 10)
+        pos = self.pm.open_position("123", "BTCUSDT", Side.LONG, 67500, 10, stop_loss=66000)
         result = self.pm.close_position(pos.id, "456")
         assert result is False
         # Position still active for original user
@@ -350,17 +350,17 @@ class TestPositionManagerEdgeCases:
     def test_zero_entry_price_rejected(self):
         """FIXED: entry_price=0 now raises ValueError."""
         with pytest.raises(ValueError, match="진입가는 0보다 커야 합니다"):
-            self.pm.open_position("123", "BTCUSDT", Side.LONG, 0.0, 10)
+            self.pm.open_position("123", "BTCUSDT", Side.LONG, 0.0, 10, stop_loss=66000)
 
     def test_zero_leverage_rejected(self):
         """FIXED: leverage=0 now raises ValueError."""
         with pytest.raises(ValueError, match="레버리지는 1~125 사이여야 합니다"):
-            self.pm.open_position("123", "BTCUSDT", Side.LONG, 67500, 0.0)
+            self.pm.open_position("123", "BTCUSDT", Side.LONG, 67500, 0.0, stop_loss=66000)
 
     def test_negative_leverage_rejected(self):
         """FIXED: negative leverage now raises ValueError."""
         with pytest.raises(ValueError, match="레버리지는 1~125 사이여야 합니다"):
-            self.pm.open_position("123", "BTCUSDT", Side.LONG, 67500, -5)
+            self.pm.open_position("123", "BTCUSDT", Side.LONG, 67500, -5, stop_loss=66000)
 
 
 # ════════════════════════════════════════════════════════════════════════

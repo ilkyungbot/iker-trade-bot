@@ -29,7 +29,11 @@ class PositionManager:
                     entry_price REAL NOT NULL,
                     leverage REAL NOT NULL,
                     created_at TEXT NOT NULL,
-                    is_active INTEGER NOT NULL DEFAULT 1
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    stop_loss REAL,
+                    take_profit REAL,
+                    margin_usdt REAL,
+                    entry_reason TEXT DEFAULT ''
                 )
             """)
             conn.execute("PRAGMA journal_mode=WAL")
@@ -41,18 +45,30 @@ class PositionManager:
         side: Side,
         entry_price: float,
         leverage: float,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+        margin_usdt: float | None = None,
+        entry_reason: str = "",
     ) -> ManualPosition:
+        if stop_loss is None or stop_loss <= 0:
+            raise ValueError("손절가(stop_loss)는 0보다 큰 값이어야 합니다.")
         if entry_price <= 0:
             raise ValueError("진입가는 0보다 커야 합니다.")
         if leverage <= 0 or leverage > 125:
             raise ValueError("레버리지는 1~125 사이여야 합니다.")
+        if side == Side.LONG and stop_loss >= entry_price:
+            raise ValueError("롱 포지션의 손절가는 진입가보다 낮아야 합니다.")
+        if side == Side.SHORT and stop_loss <= entry_price:
+            raise ValueError("숏 포지션의 손절가는 진입가보다 높아야 합니다.")
         now = datetime.now(timezone.utc)
         with sqlite3.connect(self._db_path) as conn:
             cursor = conn.execute(
                 "INSERT INTO manual_positions "
-                "(chat_id, symbol, side, entry_price, leverage, created_at, is_active) "
-                "VALUES (?, ?, ?, ?, ?, ?, 1)",
-                (chat_id, symbol, side.value, entry_price, leverage, now.isoformat()),
+                "(chat_id, symbol, side, entry_price, leverage, created_at, is_active, "
+                "stop_loss, take_profit, margin_usdt, entry_reason) "
+                "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
+                (chat_id, symbol, side.value, entry_price, leverage, now.isoformat(),
+                 stop_loss, take_profit, margin_usdt, entry_reason),
             )
             pos_id = cursor.lastrowid
         return ManualPosition(
@@ -63,12 +79,17 @@ class PositionManager:
             entry_price=entry_price,
             leverage=leverage,
             created_at=now,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            margin_usdt=margin_usdt,
+            entry_reason=entry_reason,
         )
 
     def get_active_positions(self, chat_id: str) -> list[ManualPosition]:
         with sqlite3.connect(self._db_path) as conn:
             rows = conn.execute(
-                "SELECT id, chat_id, symbol, side, entry_price, leverage, created_at "
+                "SELECT id, chat_id, symbol, side, entry_price, leverage, created_at, "
+                "is_active, stop_loss, take_profit, margin_usdt, entry_reason "
                 "FROM manual_positions WHERE chat_id = ? AND is_active = 1",
                 (chat_id,),
             ).fetchall()
@@ -77,7 +98,8 @@ class PositionManager:
     def get_all_active_positions(self) -> list[ManualPosition]:
         with sqlite3.connect(self._db_path) as conn:
             rows = conn.execute(
-                "SELECT id, chat_id, symbol, side, entry_price, leverage, created_at "
+                "SELECT id, chat_id, symbol, side, entry_price, leverage, created_at, "
+                "is_active, stop_loss, take_profit, margin_usdt, entry_reason "
                 "FROM manual_positions WHERE is_active = 1",
             ).fetchall()
         return [self._row_to_position(r) for r in rows]
@@ -117,4 +139,9 @@ class PositionManager:
             entry_price=row[4],
             leverage=row[5],
             created_at=datetime.fromisoformat(row[6]),
+            is_active=bool(row[7]),
+            stop_loss=row[8],
+            take_profit=row[9],
+            margin_usdt=row[10],
+            entry_reason=row[11] or "",
         )

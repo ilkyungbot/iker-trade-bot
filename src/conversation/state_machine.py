@@ -1,20 +1,15 @@
 """
-대화 상태 머신.
+대화 상태 머신 (v2 — 단순화).
 
 상태 전이:
-  IDLE ──(시그널 생성)──→ SIGNAL_SENT
-  SIGNAL_SENT ──("잡았다")──→ MONITORING
-  SIGNAL_SENT ──("패스"/1시간 타임아웃)──→ IDLE
-  MONITORING ──(청산 조건)──→ EXIT_SIGNAL_SENT
-  MONITORING ──("팔았다" 조기 청산)──→ IDLE
-  EXIT_SIGNAL_SENT ──("팔았다")──→ IDLE
-  EXIT_SIGNAL_SENT ──("홀딩")──→ MONITORING
+  IDLE ──(수동 포지션 등록)──→ MONITORING
+  MONITORING ──(청산)──→ IDLE
 """
 
 import logging
 import sqlite3
 import json
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 
 from core.types import (
@@ -39,6 +34,7 @@ class ConversationStateMachine:
 
     def _init_db(self) -> None:
         with sqlite3.connect(self._db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_sessions (
                     chat_id TEXT PRIMARY KEY,
@@ -62,9 +58,14 @@ class ConversationStateMachine:
         if row is None:
             return UserSession(chat_id=chat_id, state=ConversationState.IDLE)
 
+        # Migrate legacy states to IDLE
+        state_value = row[0]
+        if state_value not in ("idle", "monitoring"):
+            state_value = "idle"
+
         session = UserSession(
             chat_id=chat_id,
-            state=ConversationState(row[0]),
+            state=ConversationState(state_value),
             active_signal=_deserialize_signal_message(row[1]) if row[1] else None,
             entry_confirmed_at=datetime.fromisoformat(row[2]) if row[2] else None,
             user_entry_price=row[3],
@@ -91,57 +92,10 @@ class ConversationStateMachine:
 
     # --- 상태 전이 ---
 
-    def send_signal(self, chat_id: str, signal_msg: SignalMessage) -> bool:
-        """시그널 발송. IDLE → SIGNAL_SENT."""
-        session = self.get_session(chat_id)
-        if session.state != ConversationState.IDLE:
-            logger.warning(f"Cannot send signal: state is {session.state.value}")
-            return False
-
-        session.state = ConversationState.SIGNAL_SENT
-        session.active_signal = signal_msg
-        self._save_session(session)
-        return True
-
-    def user_entered(self, chat_id: str, entry_price: float | None = None) -> bool:
-        """사용자 진입 확인 ('잡았다'). SIGNAL_SENT → MONITORING."""
-        session = self.get_session(chat_id)
-        if session.state != ConversationState.SIGNAL_SENT:
-            return False
-
-        session.state = ConversationState.MONITORING
-        session.entry_confirmed_at = datetime.now(timezone.utc)
-        session.user_entry_price = entry_price or (
-            session.active_signal.signal.entry_price if session.active_signal else None
-        )
-        self._save_session(session)
-        return True
-
-    def user_passed(self, chat_id: str) -> bool:
-        """사용자 패스 ('패스'). SIGNAL_SENT → IDLE."""
-        session = self.get_session(chat_id)
-        if session.state != ConversationState.SIGNAL_SENT:
-            return False
-
-        session.state = ConversationState.IDLE
-        session.active_signal = None
-        self._save_session(session)
-        return True
-
-    def send_exit_signal(self, chat_id: str) -> bool:
-        """청산 시그널 발송. MONITORING → EXIT_SIGNAL_SENT."""
+    def user_exited(self, chat_id: str) -> bool:
+        """사용자 청산 확인. MONITORING → IDLE."""
         session = self.get_session(chat_id)
         if session.state != ConversationState.MONITORING:
-            return False
-
-        session.state = ConversationState.EXIT_SIGNAL_SENT
-        self._save_session(session)
-        return True
-
-    def user_exited(self, chat_id: str) -> bool:
-        """사용자 청산 확인 ('팔았다'). MONITORING|EXIT_SIGNAL_SENT → IDLE."""
-        session = self.get_session(chat_id)
-        if session.state not in (ConversationState.MONITORING, ConversationState.EXIT_SIGNAL_SENT):
             return False
 
         session.state = ConversationState.IDLE
@@ -150,35 +104,6 @@ class ConversationStateMachine:
         session.user_entry_price = None
         self._save_session(session)
         return True
-
-    def user_hold(self, chat_id: str) -> bool:
-        """사용자 홀딩 ('홀딩'). EXIT_SIGNAL_SENT → MONITORING."""
-        session = self.get_session(chat_id)
-        if session.state != ConversationState.EXIT_SIGNAL_SENT:
-            return False
-
-        session.state = ConversationState.MONITORING
-        self._save_session(session)
-        return True
-
-    def check_expiry(self, chat_id: str, expiry_minutes: int = 60) -> bool:
-        """SIGNAL_SENT 상태에서 타임아웃 체크. 만료 시 IDLE로 전이."""
-        session = self.get_session(chat_id)
-        if session.state != ConversationState.SIGNAL_SENT:
-            return False
-
-        # active_signal의 timestamp 기반 만료 체크
-        if session.active_signal:
-            signal_time = session.active_signal.signal.timestamp
-            if signal_time.tzinfo is None:
-                signal_time = signal_time.replace(tzinfo=timezone.utc)
-            elapsed = datetime.now(timezone.utc) - signal_time
-            if elapsed > timedelta(minutes=expiry_minutes):
-                session.state = ConversationState.IDLE
-                session.active_signal = None
-                self._save_session(session)
-                return True
-        return False
 
     def force_idle(self, chat_id: str) -> None:
         """강제로 IDLE 상태로 리셋."""

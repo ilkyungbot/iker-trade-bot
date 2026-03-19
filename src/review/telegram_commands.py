@@ -25,10 +25,6 @@ logger = logging.getLogger(__name__)
 
 # Korean text → handler method name mapping
 _KR_COMMANDS: dict[str, str] = {
-    "잡았다": "_cmd_entered",
-    "팔았다": "_cmd_exited",
-    "패스": "_cmd_pass",
-    "홀딩": "_cmd_hold",
     "상태": "_cmd_status",
     "현황": "_cmd_briefing",
     "성과": "_cmd_performance",
@@ -41,7 +37,11 @@ _POSITION_FLOW_STEPS = {
     "ask_symbol": "어떤 코인인가요? (예: BTC, ETH, SOL)",
     "ask_side": "롱인가요, 숏인가요? (롱/숏)",
     "ask_entry": "평단가를 입력해주세요. (숫자만)",
-    "ask_leverage": "레버리지 배율을 입력해주세요. (예: 10)",
+    "ask_leverage": "레버리지 배율을 입력해주세요. (예: 5)",
+    "ask_margin": "투입 마진을 입력해주세요. (USDT, 예: 500)",
+    "ask_stop_loss": "손절가를 입력해주세요.",  # Bot will show ATR guide
+    "ask_take_profit": "익절가를 입력해주세요.",  # Bot will show R:R guide
+    "ask_reason": "진입 논리를 한줄로 입력해주세요. (예: 200EMA 반등 + 펀딩 음전환)",
 }
 
 
@@ -135,7 +135,7 @@ class TelegramCommandHandler:
             await self._cmd_analyze_coin(update, context, upper)
 
     async def _callback_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """인라인 버튼 콜백 처리."""
+        """인라인 버튼 콜백 처리 (레거시 버튼은 무시)."""
         query: CallbackQuery = update.callback_query
         if not query:
             return
@@ -143,123 +143,6 @@ class TelegramCommandHandler:
 
         if not self._check_auth(update):
             return
-
-        data = query.data
-        if data == "entered":
-            await self._handle_entered(query)
-        elif data == "pass":
-            await self._handle_pass(query)
-        elif data == "exited":
-            await self._handle_exited(query)
-        elif data == "hold":
-            await self._handle_hold(query)
-
-    async def _handle_entered(self, query: CallbackQuery) -> None:
-        bot = self._bot_ref
-        if not bot:
-            return
-        success = bot.state_machine.user_entered(self.chat_id)
-        if success:
-            await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text(
-                "\u2705 <b>진입 확인!</b>\n포지션 모니터링을 시작합니다.\n매도 시 '팔았다' 또는 버튼을 눌러주세요.",
-                parse_mode="HTML",
-            )
-        else:
-            await query.message.reply_text("현재 상태에서 진입 확인이 불가합니다.")
-
-    async def _handle_pass(self, query: CallbackQuery) -> None:
-        bot = self._bot_ref
-        if not bot:
-            return
-        success = bot.state_machine.user_passed(self.chat_id)
-        if success:
-            await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text("\u274c 시그널을 패스했습니다. 다음 시그널을 기다립니다.")
-        else:
-            await query.message.reply_text("현재 상태에서 패스가 불가합니다.")
-
-    async def _handle_exited(self, query: CallbackQuery) -> None:
-        bot = self._bot_ref
-        if not bot:
-            return
-        success = bot.state_machine.user_exited(self.chat_id)
-        if success:
-            await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text("\u2705 <b>청산 확인!</b>\n다음 시그널을 기다립니다.", parse_mode="HTML")
-        else:
-            await query.message.reply_text("현재 상태에서 청산 확인이 불가합니다.")
-
-    async def _handle_hold(self, query: CallbackQuery) -> None:
-        bot = self._bot_ref
-        if not bot:
-            return
-        success = bot.state_machine.user_hold(self.chat_id)
-        if success:
-            await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text("\u23f3 홀딩 계속! 모니터링을 유지합니다.")
-        else:
-            await query.message.reply_text("현재 상태에서 홀딩이 불가합니다.")
-
-    # --- 텍스트 커맨드 핸들러 ---
-
-    async def _cmd_entered(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._check_auth(update):
-            return
-        bot = self._bot_ref
-        if not bot:
-            await update.message.reply_text("봇이 초기화되지 않았습니다.")
-            return
-        success = bot.state_machine.user_entered(self.chat_id)
-        if success:
-            await update.message.reply_text(
-                "\u2705 <b>진입 확인!</b>\n포지션 모니터링을 시작합니다.",
-                parse_mode="HTML",
-            )
-        else:
-            await update.message.reply_text("현재 활성 시그널이 없거나 이미 진입 상태입니다.")
-
-    async def _cmd_exited(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._check_auth(update):
-            return
-        bot = self._bot_ref
-        if not bot:
-            await update.message.reply_text("봇이 초기화되지 않았습니다.")
-            return
-        success = bot.state_machine.user_exited(self.chat_id)
-        if success:
-            await update.message.reply_text(
-                "\u2705 <b>청산 확인!</b>\n다음 시그널을 기다립니다.",
-                parse_mode="HTML",
-            )
-        else:
-            await update.message.reply_text("현재 모니터링 중인 포지션이 없습니다.")
-
-    async def _cmd_pass(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._check_auth(update):
-            return
-        bot = self._bot_ref
-        if not bot:
-            await update.message.reply_text("봇이 초기화되지 않았습니다.")
-            return
-        success = bot.state_machine.user_passed(self.chat_id)
-        if success:
-            await update.message.reply_text("\u274c 시그널을 패스했습니다.")
-        else:
-            await update.message.reply_text("현재 대기 중인 시그널이 없습니다.")
-
-    async def _cmd_hold(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._check_auth(update):
-            return
-        bot = self._bot_ref
-        if not bot:
-            await update.message.reply_text("봇이 초기화되지 않았습니다.")
-            return
-        success = bot.state_machine.user_hold(self.chat_id)
-        if success:
-            await update.message.reply_text("\u23f3 홀딩 계속! 모니터링을 유지합니다.")
-        else:
-            await update.message.reply_text("현재 청산 시그널 대기 상태가 아닙니다.")
 
     async def _cmd_analyze_coin(self, update: Update, context: ContextTypes.DEFAULT_TYPE, symbol: str = "") -> None:
         """티커 심볼 입력 → 코인 심층 분석."""
@@ -287,13 +170,41 @@ class TelegramCommandHandler:
             await update.message.reply_text(f"분석 실패: {e}")
 
     async def _cmd_briefing(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """현황 — 즉시 시장 브리핑."""
+        """현황 — 포지션 대시보드 + 시장 브리핑."""
         if not self._check_auth(update):
             return
         bot = self._bot_ref
         if not bot:
             await update.message.reply_text("봇이 초기화되지 않았습니다.")
             return
+
+        # 1. Position dashboard (if any)
+        if hasattr(bot, "position_manager"):
+            positions = bot.position_manager.get_active_positions(self.chat_id)
+            if positions:
+                price_data = {}
+                for pos in positions:
+                    try:
+                        now = datetime.now(timezone.utc)
+                        candles = await bot._run_sync(
+                            bot.collector.get_candles, pos.symbol, "1",
+                            start_time=now - timedelta(minutes=5),
+                        )
+                        if candles:
+                            cp = candles[-1].close
+                            pnl_pct = (cp - pos.entry_price) / pos.entry_price * 100
+                            if pos.side == Side.SHORT:
+                                pnl_pct = -pnl_pct
+                            pnl_pct *= pos.leverage
+                            pnl_usdt = (pos.margin_usdt * pnl_pct / 100) if pos.margin_usdt else None
+                            price_data[pos.symbol] = {"current_price": cp, "pnl_pct": pnl_pct, "pnl_usdt": pnl_usdt}
+                    except Exception:
+                        pass
+
+                dashboard = bot.reporter.format_position_dashboard(positions, price_data)
+                await update.message.reply_text(dashboard, parse_mode="HTML")
+
+        # 2. Market briefing (always)
         await update.message.reply_text("\U0001f50d 시장 스캔 중...")
         try:
             briefing = await bot.generate_briefing()
@@ -313,9 +224,7 @@ class TelegramCommandHandler:
         session = bot.state_machine.get_session(self.chat_id)
         state_kr = {
             ConversationState.IDLE: "\U0001f7e2 대기 중",
-            ConversationState.SIGNAL_SENT: "\U0001f7e1 시그널 발송됨 (응답 대기)",
             ConversationState.MONITORING: "\U0001f4ca 모니터링 중",
-            ConversationState.EXIT_SIGNAL_SENT: "\U0001f534 청산 시그널 대기",
         }
 
         msg = f"<b>\U0001f916 봇 상태</b>\n\n상태: {state_kr.get(session.state, session.state.value)}\n"
@@ -351,8 +260,12 @@ class TelegramCommandHandler:
             await update.message.reply_text("봇이 초기화되지 않았습니다.")
             return
 
-        report = bot.signal_tracker.weekly_report()
-        msg = bot.reporter.format_weekly_accuracy(report)
+        if hasattr(bot, "trading_journal"):
+            report = bot.trading_journal.weekly_report(self.chat_id)
+            msg = bot.reporter.format_journal_report(report)
+        else:
+            report = bot.signal_tracker.weekly_report()
+            msg = bot.reporter.format_weekly_accuracy(report)
         await update.message.reply_text(msg, parse_mode="HTML")
 
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -360,18 +273,15 @@ class TelegramCommandHandler:
             return
         msg = (
             "<b>\U0001f916 시그널봇 명령어</b>\n\n"
-            "<b>한글 입력</b>\n"
-            "잡았다 \u2014 시그널 진입 확인\n"
-            "팔았다 \u2014 포지션 청산 확인\n"
-            "패스 \u2014 시그널 스킵\n"
-            "홀딩 \u2014 계속 보유\n"
-            "현황 \u2014 시장 브리핑 (즉시)\n"
-            "SOL, BTC 등 \u2014 코인 심층분석\n"
-            "상태 \u2014 현재 봇 상태\n"
-            "성과 \u2014 시그널 정확도\n"
+            "<b>포지션 관리</b>\n"
             "신규 포지션 \u2014 수동 포지션 등록\n"
             "청산 \u2014 포지션 청산\n"
-            "취소 \u2014 포지션 등록 취소\n"
+            "취소 \u2014 등록 취소\n\n"
+            "<b>조회</b>\n"
+            "현황 \u2014 내 포지션 대시보드\n"
+            "상태 \u2014 봇 시스템 상태\n"
+            "성과 \u2014 트레이딩 리포트\n"
+            "SOL, BTC 등 \u2014 코인 심층분석\n"
             "도움말 \u2014 이 메시지\n\n"
             "<b>슬래시 명령어</b>\n"
             "/status /performance /help"
@@ -424,6 +334,13 @@ class TelegramCommandHandler:
             bot.position_manager.close_position(pos.id, self.chat_id)
             if hasattr(bot, "position_monitor"):
                 bot.position_monitor.clear_position(pos.id)
+            if hasattr(bot, "trading_journal") and final_pnl is not None:
+                try:
+                    candles_data = await bot._run_sync(bot.collector.get_candles, pos.symbol, "1", start_time=datetime.now(timezone.utc) - timedelta(minutes=5))
+                    exit_price = candles_data[-1].close if candles_data else pos.entry_price
+                except Exception:
+                    exit_price = pos.entry_price
+                bot.trading_journal.record_exit(pos.id, exit_price, "manual")
             text = bot.reporter.format_position_closed(pos, final_pnl)
             await update.message.reply_text(text, parse_mode="HTML")
         else:
@@ -488,12 +405,181 @@ class TelegramCommandHandler:
                 await update.message.reply_text("1~125 사이 숫자를 입력해주세요.")
                 return
             data["leverage"] = leverage
+            context.user_data["position_data"] = data
+            context.user_data["position_flow"] = "ask_margin"
+            await update.message.reply_text(_POSITION_FLOW_STEPS["ask_margin"])
 
-            if bot and hasattr(bot, "position_manager"):
-                pos = bot.position_manager.open_position(
-                    self.chat_id, data["symbol"], data["side"],
-                    data["entry_price"], data["leverage"],
+        elif step == "ask_margin":
+            try:
+                margin = float(text.strip().replace(",", ""))
+                if margin <= 0:
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text("올바른 숫자를 입력해주세요. (예: 500)")
+                return
+            data["margin_usdt"] = margin
+            context.user_data["position_data"] = data
+            context.user_data["position_flow"] = "ask_stop_loss"
+
+            # Show ATR-based SL suggestion
+            sl_guide = ""
+            if bot:
+                try:
+                    from execution.risk_calculator import suggest_stop_loss
+                    now = datetime.now(timezone.utc)
+                    candles = await bot._run_sync(
+                        bot.collector.get_candles, data["symbol"], "240",
+                        start_time=now - timedelta(days=30),
+                    )
+                    if candles and len(candles) > 14:
+                        from data.features import candles_to_dataframe, add_all_features
+                        df = candles_to_dataframe(candles)
+                        df = add_all_features(df)
+                        atr = float(df.iloc[-1].get("atr", 0))
+                        if atr > 0:
+                            suggested_sl = suggest_stop_loss(data["entry_price"], data["side"], atr, data["leverage"])
+                            from review.reporter import _format_price
+                            leveraged_loss = abs(data["entry_price"] - suggested_sl) / data["entry_price"] * 100 * data["leverage"]
+                            liq_price = (
+                                data["entry_price"] * (1 - 1 / data["leverage"])
+                                if data["side"].value == "long"
+                                else data["entry_price"] * (1 + 1 / data["leverage"])
+                            )
+                            sl_guide = (
+                                f"\n\U0001f4cc <b>참고 가이드:</b>"
+                                f"\n\u2022 ATR 기반 추천 손절: {_format_price(suggested_sl)} (레버리지 반영 -{leveraged_loss:.1f}%)"
+                                f"\n\u2022 {data['leverage']}x 청산가: {_format_price(liq_price)}"
+                            )
+                except Exception:
+                    pass
+
+            await update.message.reply_text(
+                _POSITION_FLOW_STEPS["ask_stop_loss"] + sl_guide,
+                parse_mode="HTML",
+            )
+
+        elif step == "ask_stop_loss":
+            try:
+                sl = float(text.strip().replace(",", ""))
+                if sl <= 0:
+                    raise ValueError
+                if data["side"] == Side.LONG and sl >= data["entry_price"]:
+                    await update.message.reply_text("롱 포지션의 손절가는 평단가보다 낮아야 합니다.")
+                    return
+                if data["side"] == Side.SHORT and sl <= data["entry_price"]:
+                    await update.message.reply_text("숏 포지션의 손절가는 평단가보다 높아야 합니다.")
+                    return
+            except ValueError:
+                await update.message.reply_text("올바른 숫자를 입력해주세요.")
+                return
+            data["stop_loss"] = sl
+            context.user_data["position_data"] = data
+            context.user_data["position_flow"] = "ask_take_profit"
+
+            # Show R:R guide
+            from execution.risk_calculator import suggest_take_profit
+            from review.reporter import _format_price
+            suggested_tp = suggest_take_profit(data["entry_price"], data["side"], sl)
+            tp_guide = f"\n\U0001f4cc <b>참고:</b>\n\u2022 R:R 2:1 기준 익절가: {_format_price(suggested_tp)}"
+
+            await update.message.reply_text(
+                _POSITION_FLOW_STEPS["ask_take_profit"] + tp_guide,
+                parse_mode="HTML",
+            )
+
+        elif step == "ask_take_profit":
+            try:
+                tp = float(text.strip().replace(",", ""))
+                if tp <= 0:
+                    raise ValueError
+                if data["side"] == Side.LONG and tp <= data["entry_price"]:
+                    await update.message.reply_text("롱 포지션의 익절가는 평단가보다 높아야 합니다.")
+                    return
+                if data["side"] == Side.SHORT and tp >= data["entry_price"]:
+                    await update.message.reply_text("숏 포지션의 익절가는 평단가보다 낮아야 합니다.")
+                    return
+            except ValueError:
+                await update.message.reply_text("올바른 숫자를 입력해주세요.")
+                return
+            data["take_profit"] = tp
+            context.user_data["position_data"] = data
+
+            # Show R:R validation
+            from execution.risk_calculator import calculate_rr_ratio, validate_position
+            rr = calculate_rr_ratio(data["entry_price"], data["stop_loss"], tp, data["side"])
+            validation = validate_position(
+                data["entry_price"], data["stop_loss"], tp,
+                data["leverage"], data["margin_usdt"], data["side"],
+            )
+
+            rr_msg = f"\nR:R = 1:{rr:.1f}"
+            if validation.get("max_loss_usdt"):
+                rr_msg += f"\n최대 손실: {validation['max_loss_usdt']:.1f} USDT ({validation['max_loss_pct']:.1f}%)"
+
+            if rr < 1.5:
+                context.user_data["position_flow"] = "confirm_low_rr"
+                await update.message.reply_text(
+                    rr_msg + f"\n\n\u26a0\ufe0f R:R이 1:{rr:.1f}로 권장 기준(1.5) 미만입니다.\n계속 진행하시겠습니까? (예/아니오)",
+                    parse_mode="HTML",
                 )
+                return
+
+            rr_msg += " \u2705"
+            context.user_data["position_flow"] = "ask_reason"
+            await update.message.reply_text(
+                rr_msg + "\n\n" + _POSITION_FLOW_STEPS["ask_reason"],
+                parse_mode="HTML",
+            )
+
+        elif step == "confirm_low_rr":
+            answer = text.strip().lower()
+            if answer in ("예", "네", "ㅇ", "yes", "y"):
+                context.user_data["position_flow"] = "ask_reason"
+                await update.message.reply_text(_POSITION_FLOW_STEPS["ask_reason"])
+            elif answer in ("아니오", "아니", "ㄴ", "no", "n"):
+                await update.message.reply_text("포지션 등록을 취소했습니다.")
+                context.user_data.pop("position_flow", None)
+                context.user_data.pop("position_data", None)
+            else:
+                await update.message.reply_text("'예' 또는 '아니오'로 입력해주세요.")
+            return
+
+        elif step == "ask_reason":
+            reason = text.strip()
+            if not reason:
+                await update.message.reply_text("진입 논리를 입력해주세요. 빈 입력은 허용되지 않습니다.")
+                return
+            data["entry_reason"] = reason
+
+            # Register position
+            if bot and hasattr(bot, "position_manager"):
+                # Guard check FIRST
+                if hasattr(bot, "portfolio_guard"):
+                    positions = bot.position_manager.get_active_positions(self.chat_id)
+                    result = bot.portfolio_guard.check_can_open(positions, data["symbol"])
+                    if not result.allowed:
+                        await update.message.reply_text(f"\u274c 진입 거부: {result.reason}")
+                        context.user_data.pop("position_flow", None)
+                        context.user_data.pop("position_data", None)
+                        return
+
+                # THEN register
+                pos = bot.position_manager.open_position(
+                    chat_id=self.chat_id,
+                    symbol=data["symbol"],
+                    side=data["side"],
+                    entry_price=data["entry_price"],
+                    leverage=data["leverage"],
+                    stop_loss=data.get("stop_loss"),
+                    take_profit=data.get("take_profit"),
+                    margin_usdt=data.get("margin_usdt"),
+                    entry_reason=data.get("entry_reason", ""),
+                )
+
+                # Record in trading journal
+                if hasattr(bot, "trading_journal"):
+                    bot.trading_journal.record_entry(pos)
+
                 text_msg = bot.reporter.format_position_registered(pos)
                 await update.message.reply_text(text_msg, parse_mode="HTML")
             else:
@@ -530,6 +616,13 @@ class TelegramCommandHandler:
                     bot.position_manager.close_position(target.id, self.chat_id)
                     if hasattr(bot, "position_monitor"):
                         bot.position_monitor.clear_position(target.id)
+                    if hasattr(bot, "trading_journal") and final_pnl is not None:
+                        try:
+                            candles_data = await bot._run_sync(bot.collector.get_candles, target.symbol, "1", start_time=datetime.now(timezone.utc) - timedelta(minutes=5))
+                            exit_price = candles_data[-1].close if candles_data else target.entry_price
+                        except Exception:
+                            exit_price = target.entry_price
+                        bot.trading_journal.record_exit(target.id, exit_price, "manual")
                     text_msg = bot.reporter.format_position_closed(target, final_pnl)
                     await update.message.reply_text(text_msg, parse_mode="HTML")
                 else:

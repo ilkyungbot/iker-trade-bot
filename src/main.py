@@ -36,10 +36,16 @@ from strategy.funding_rate import FundingRateStrategy
 from conversation.state_machine import ConversationStateMachine
 from conversation.signal_tracker import SignalTracker
 from conversation.position_manager import PositionManager
-from strategy.position_monitor import PositionMonitor
+from strategy.position_monitor import PositionMonitorV2
+from strategy.edge_detector import EdgeDetector
+from strategy.market_regime import MarketRegimeClassifier
+from execution.exit_manager import ExitManager
+from execution.portfolio_guard import PortfolioGuard
+from execution.risk_calculator import validate_position
 from execution.circuit_breaker import SignalCooldown
 from review.reporter import Reporter, TelegramBotSender
 from review.telegram_commands import TelegramCommandHandler
+from review.trading_journal import TradingJournal
 
 logging.basicConfig(
     level=logging.INFO,
@@ -72,11 +78,14 @@ class SignalBot:
         self.state_machine = ConversationStateMachine()
         self.signal_tracker = SignalTracker()
         self.position_manager = PositionManager()
-        self.position_monitor = PositionMonitor()
+        self.position_monitor_v2 = PositionMonitorV2()
+        self.portfolio_guard = PortfolioGuard()
+        self.trading_journal = TradingJournal()
 
         # Cooldown & API error tracking
         self.cooldown = SignalCooldown(cooldown_minutes=config.signal.signal_cooldown_minutes)
         self._last_signal_time: datetime | None = None
+        self._last_regime: dict[str, str] = {}  # symbol → last regime value
 
         # Telegram
         tg_sender = (
@@ -107,12 +116,6 @@ class SignalBot:
         # 1시간 브리핑: 매시 정각
         scheduler.add_job(self.hourly_briefing, "cron", minute=0)
 
-        # 포지션 모니터링: 매 15분 (사용자가 포지션 중일 때만)
-        scheduler.add_job(self.monitor_position, "cron", minute="*/15")
-
-        # 시그널 만료 체크: 매 10분
-        scheduler.add_job(self.check_expiry, "cron", minute="*/10")
-
         # 시그널 결과 추적: 매 시간
         scheduler.add_job(self.check_signal_outcomes, "cron", minute=30)
 
@@ -124,6 +127,10 @@ class SignalBot:
 
         # 주간 리포트: 월요일 00:10 UTC
         scheduler.add_job(self.weekly_report, "cron", day_of_week="mon", hour=0, minute=10)
+
+        # 포트폴리오 가드 리셋
+        scheduler.add_job(self._reset_daily_guard, "cron", hour=0, minute=0)  # UTC midnight
+        scheduler.add_job(self._reset_monthly_guard, "cron", day=1, hour=0, minute=0)  # 1st of month
 
         scheduler.start()
 
@@ -148,13 +155,7 @@ class SignalBot:
         now = datetime.now(timezone.utc)
         logger.info(f"=== Signal cycle: {now.isoformat()} ===")
 
-        # 상태 체크: IDLE이 아니면 스킵
-        session = self.state_machine.get_session(self.config.telegram.chat_id)
-        if session.state != ConversationState.IDLE:
-            logger.info(f"Skipping signal cycle: state is {session.state.value}")
-            return
-
-        # 쿨다운 체크
+        # 쿨다운 체크만 (상태 체크 제거 — 시그널은 참고 정보로만 발송)
         if not self.cooldown.can_send_signal(self._last_signal_time):
             logger.info("Skipping: cooldown active")
             return
@@ -542,60 +543,6 @@ class SignalBot:
             "tp": tp,
         }
 
-    async def monitor_position(self) -> None:
-        """모니터링 중인 포지션 업데이트."""
-        session = self.state_machine.get_session(self.config.telegram.chat_id)
-        if session.state not in (ConversationState.MONITORING, ConversationState.EXIT_SIGNAL_SENT):
-            return
-
-        if not session.active_signal:
-            return
-
-        s = session.active_signal.signal
-        try:
-            candles = await self._run_sync(
-                self.collector.get_candles,
-                s.symbol, "1",
-                start_time=datetime.now(timezone.utc) - timedelta(minutes=5),
-            )
-            if not candles:
-                return
-
-            current_price = candles[-1].close
-            direction = "long" if s.action == SignalAction.ENTER_LONG else "short"
-
-            # TP/SL 도달 체크
-            if direction == "long":
-                tp_hit = current_price >= s.take_profit
-                sl_hit = current_price <= s.stop_loss
-            else:
-                tp_hit = current_price <= s.take_profit
-                sl_hit = current_price >= s.stop_loss
-
-            if (tp_hit or sl_hit) and session.state == ConversationState.MONITORING:
-                reason = "목표가 도달! \U0001f389" if tp_hit else "손절가 도달 \u26a0\ufe0f"
-                self.state_machine.send_exit_signal(self.config.telegram.chat_id)
-                await self.reporter.send_exit_signal(s.symbol, direction, reason)
-            elif session.state == ConversationState.MONITORING:
-                # 정기 모니터링 업데이트 (15분마다)
-                entry = session.user_entry_price or s.entry_price
-                await self.reporter.send_monitoring_update(
-                    s.symbol, direction, entry, current_price, s.stop_loss, s.take_profit,
-                )
-
-        except Exception as e:
-            logger.error(f"Monitor error: {e}")
-
-    async def check_expiry(self) -> None:
-        """SIGNAL_SENT 상태 타임아웃 체크."""
-        expired = self.state_machine.check_expiry(
-            self.config.telegram.chat_id,
-            self.config.signal.signal_expiry_minutes,
-        )
-        if expired:
-            await self.reporter.send_alert("시그널 응답 시간 초과. 자동으로 패스 처리되었습니다.")
-            logger.info("Signal expired, auto-passed")
-
     async def check_signal_outcomes(self) -> None:
         """과거 시그널 결과 추적."""
         unchecked = self.signal_tracker.get_unchecked_signals()
@@ -643,12 +590,26 @@ class SignalBot:
                 logger.error(f"Error checking signal outcome: {e}")
 
     async def monitor_manual_positions(self) -> None:
-        """수동 포지션 이벤트 감지 + 푸시."""
+        """수동 포지션 이벤트 감지 v2 — 통합 모니터링."""
         positions = self.position_manager.get_all_active_positions()
         if not positions:
             return
 
         now = datetime.now(timezone.utc)
+
+        # BTC 데이터 (레짐 분류용) — 한 번만 조회
+        btc_df = None
+        try:
+            btc_candles = await self._run_sync(
+                self.collector.get_candles,
+                "BTCUSDT", self.config.signal.primary_interval,
+                start_time=now - timedelta(days=60),
+            )
+            if btc_candles and len(btc_candles) > 50:
+                btc_df = candles_to_dataframe(btc_candles)
+                btc_df = add_all_features(btc_df)
+        except Exception:
+            pass
 
         for pos in positions:
             try:
@@ -674,27 +635,67 @@ class SignalBot:
                     continue
                 current_price = recent[-1].close
 
+                # ATR
+                atr = float(df.iloc[-1].get("atr", 0))
+
                 # 펀딩비
-                funding_rate = 0.0
+                funding_rates = []
                 try:
                     rates = await self._run_sync(
                         self.collector.get_funding_rates,
-                        pos.symbol, start_time=now - timedelta(hours=8),
+                        pos.symbol, start_time=now - timedelta(hours=24),
                     )
                     if rates:
-                        funding_rate = rates[-1].rate
+                        funding_rates = rates
                 except Exception:
                     pass
 
-                # 이벤트 감지
-                events = self.position_monitor.detect_events(pos, df, current_price, funding_rate)
+                # OI
+                oi_data = []
+                try:
+                    oi_list = await self._run_sync(
+                        self.collector.get_open_interest_history,
+                        pos.symbol, "1h", start_time=now - timedelta(hours=4),
+                    )
+                    if oi_list:
+                        oi_data = oi_list
+                except Exception:
+                    pass
 
-                # 이벤트 발송
-                for event in events:
-                    await self.reporter.send_position_event(event, pos)
+                # 통합 체크
+                result = self.position_monitor_v2.check_position(
+                    pos, df, current_price, atr,
+                    funding_rates=funding_rates,
+                    oi_data=oi_data,
+                    btc_df=btc_df,
+                )
+
+                # Regime change detection
+                regime = result.get("regime")
+                if regime:
+                    last = self._last_regime.get(pos.symbol)
+                    if last and last != regime.regime.value:
+                        await self.reporter.send_regime_change(regime, position=pos)
+                    self._last_regime[pos.symbol] = regime.regime.value
+
+                # Exit signals 발송
+                for sig in result["exit_signals"]:
+                    await self.reporter.send_exit_signal_v2(sig, position=pos)
+
+                # Edge signals 발송
+                for edge in result["edge_signals"]:
+                    await self.reporter.send_edge_alert(edge, pos)
 
             except Exception as e:
                 logger.error(f"Manual position monitor error for {pos.symbol}: {e}", exc_info=True)
+
+    async def _reset_daily_guard(self) -> None:
+        self.portfolio_guard.reset_daily()
+        logger.info("Daily portfolio guard reset")
+
+    async def _reset_monthly_guard(self) -> None:
+        self.portfolio_guard.reset_monthly()
+        logger.info("Monthly portfolio guard reset")
 
     async def daily_report(self) -> None:
         """일간 시그널 리포트."""
@@ -792,31 +793,18 @@ class SignalBot:
             return None
 
     async def _send_signal(self, signal_msg) -> None:
-        """시그널 발송 + 상태 전이 + 추적 기록."""
-        chat_id = self.config.telegram.chat_id
-        success = self.state_machine.send_signal(chat_id, signal_msg)
-        if not success:
-            logger.warning("Failed to transition to SIGNAL_SENT")
-            return
-
+        """시그널 발송 (참고 정보로만). 상태 전이 없음."""
         await self.reporter.send_signal(signal_msg)
 
-        # 정확도 추적용 기록
         s = signal_msg.signal
         direction = "long" if s.action == SignalAction.ENTER_LONG else "short"
         self.signal_tracker.record_signal(
-            symbol=s.symbol,
-            direction=direction,
-            strategy=s.strategy.value,
-            quality=signal_msg.quality.value,
-            entry_price=s.entry_price,
-            stop_loss=s.stop_loss,
-            take_profit=s.take_profit,
-            signal_time=s.timestamp,
+            symbol=s.symbol, direction=direction, strategy=s.strategy.value,
+            quality=signal_msg.quality.value, entry_price=s.entry_price,
+            stop_loss=s.stop_loss, take_profit=s.take_profit, signal_time=s.timestamp,
         )
-
         self._last_signal_time = datetime.now(timezone.utc)
-        logger.info(f"Signal sent: {direction} {s.symbol} (quality={signal_msg.quality.value})")
+        logger.info(f"Signal sent (info only): {direction} {s.symbol}")
 
     @staticmethod
     def _signal_score(msg) -> float:
