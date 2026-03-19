@@ -1,8 +1,8 @@
 """Tests for risk_calculator module — written before implementation (TDD)."""
 
 import pytest
-from src.core.types import Side
-from src.execution.risk_calculator import (
+from core.types import Side
+from execution.risk_calculator import (
     add_slippage_buffer,
     calculate_rr_ratio,
     suggest_stop_loss,

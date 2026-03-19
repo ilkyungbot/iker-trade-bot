@@ -101,9 +101,14 @@ class TestSignalScore:
 class TestSignalCycleSkips:
     def test_skips_when_not_idle(self, tmp_path):
         """IDLE이 아니면 시그널 사이클 스킵."""
+        from core.types import UserSession
         bot = _make_bot(tmp_path)
-        msg = _make_signal_msg()
-        bot.state_machine.send_signal("123", msg)
+        # Set state to MONITORING (not IDLE)
+        session = UserSession(
+            chat_id="123",
+            state=ConversationState.MONITORING,
+        )
+        bot.state_machine._save_session(session)
 
         loop = asyncio.new_event_loop()
         try:
@@ -125,19 +130,3 @@ class TestSignalCycleSkips:
             loop.close()
 
         bot.reporter.send_signal.assert_not_called()
-
-
-class TestSendSignal:
-    def test_send_signal_transitions_state(self, tmp_path):
-        bot = _make_bot(tmp_path)
-        msg = _make_signal_msg()
-
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(bot._send_signal(msg))
-        finally:
-            loop.close()
-
-        session = bot.state_machine.get_session("123")
-        assert session.state == ConversationState.SIGNAL_SENT
-        bot.reporter.send_signal.assert_called_once()

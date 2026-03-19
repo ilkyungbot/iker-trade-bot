@@ -72,14 +72,12 @@ class TestSignalMessage:
 class TestConversationState:
     def test_states_exist(self):
         assert ConversationState.IDLE.value == "idle"
-        assert ConversationState.SIGNAL_SENT.value == "signal_sent"
         assert ConversationState.MONITORING.value == "monitoring"
-        assert ConversationState.EXIT_SIGNAL_SENT.value == "exit_signal_sent"
 
-    def test_no_user_entered_state(self):
-        """USER_ENTERED는 제거됨 (SIGNAL_SENT → 바로 MONITORING)."""
+    def test_only_two_states(self):
+        """v2: IDLE and MONITORING only."""
         values = [s.value for s in ConversationState]
-        assert "user_entered" not in values
+        assert sorted(values) == ["idle", "monitoring"]
 
 
 class TestUserSession:

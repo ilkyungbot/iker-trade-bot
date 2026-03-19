@@ -11,7 +11,7 @@ from datetime import datetime, timezone, timedelta
 
 from core.config import AppConfig, BybitConfig, DatabaseConfig, TelegramConfig, SignalConfig
 from core.types import (
-    Candle, Signal, SignalAction, StrategyName,
+    Candle, ConversationState, Signal, SignalAction, StrategyName,
     SignalMessage, SignalQuality,
 )
 from data.features import add_all_features, candles_to_dataframe
@@ -62,7 +62,8 @@ class TestEndToEnd:
             assert result.quality in (SignalQuality.STRONG, SignalQuality.MODERATE)
 
     def test_state_machine_full_flow(self, tmp_path):
-        """IDLE → SIGNAL_SENT → MONITORING → EXIT_SIGNAL_SENT → IDLE."""
+        """IDLE → (manual entry) → MONITORING → user_exited → IDLE."""
+        from core.types import UserSession
         sm = ConversationStateMachine(db_path=str(tmp_path / "test.db"))
 
         s = Signal(
@@ -77,19 +78,21 @@ class TestEndToEnd:
             explanation=["test"], indicators={}, risk_reward_ratio=2.0,
         )
 
-        # IDLE → SIGNAL_SENT
-        assert sm.send_signal("123", msg)
-        assert sm.get_session("123").state.value == "signal_sent"
+        # Start IDLE
+        assert sm.get_session("123").state.value == "idle"
 
-        # SIGNAL_SENT → MONITORING
-        assert sm.user_entered("123", entry_price=67500)
+        # Manual entry → MONITORING (via _save_session)
+        session = UserSession(
+            chat_id="123",
+            state=ConversationState.MONITORING,
+            active_signal=msg,
+            entry_confirmed_at=datetime.now(timezone.utc),
+            user_entry_price=67500,
+        )
+        sm._save_session(session)
         assert sm.get_session("123").state.value == "monitoring"
 
-        # MONITORING → EXIT_SIGNAL_SENT
-        assert sm.send_exit_signal("123")
-        assert sm.get_session("123").state.value == "exit_signal_sent"
-
-        # EXIT_SIGNAL_SENT → IDLE
+        # MONITORING → IDLE via user_exited
         assert sm.user_exited("123")
         assert sm.get_session("123").state.value == "idle"
 
