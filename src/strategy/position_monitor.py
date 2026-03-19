@@ -1,28 +1,102 @@
 """
-포지션 모니터링 — 이벤트 감지 엔진.
-활성 포지션별로 기술 지표 + 레버리지 맥락을 분석하여
-6종 이벤트(상승/하락 신호, 포지션 체크, 매도/홀딩/매수 추천)를 감지.
+포지션 모니터링 v2 — 새 프레임워크 기반.
+ExitManager, EdgeDetector, MarketRegimeClassifier를 통합하여
+7종 이벤트를 감지.
 """
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+
 import pandas as pd
-from core.types import ManualPosition, Side
+
+from core.types import ManualPosition, Side, FundingRate, OpenInterest
+from execution.exit_manager import ExitManager, ExitSignal
+from strategy.edge_detector import EdgeDetector, EdgeSignal
+from strategy.market_regime import MarketRegimeClassifier, RegimeState
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class PositionEvent:
-    event_type: str  # bullish_signal, bearish_signal, position_check, sell_recommendation, hold_recommendation, buy_recommendation
+    event_type: str
     position_id: int
     symbol: str
     message: str
-    severity: str  # info, warning, critical
+    severity: str
     pnl_percent: float
 
 
-class PositionMonitor:
+class PositionMonitorV2:
+    """통합 포지션 모니터. ExitManager + EdgeDetector + MarketRegime."""
+
+    def __init__(self):
+        self.exit_manager = ExitManager()
+        self.edge_detector = EdgeDetector()
+        self.regime_classifier = MarketRegimeClassifier()
+        self._last_events: dict[int, dict[str, datetime]] = {}
+
+    def check_position(
+        self,
+        position: ManualPosition,
+        df: pd.DataFrame,
+        current_price: float,
+        atr: float,
+        funding_rates: list[FundingRate] | None = None,
+        oi_data: list[OpenInterest] | None = None,
+        btc_df: pd.DataFrame | None = None,
+    ) -> dict:
+        """
+        Comprehensive position check. Returns:
+        {
+            "exit_signals": list[ExitSignal],
+            "edge_signals": list[EdgeSignal],
+            "regime": RegimeState | None,
+            "pnl_pct": float,
+        }
+        """
+        result = {
+            "exit_signals": [],
+            "edge_signals": [],
+            "regime": None,
+            "pnl_pct": 0.0,
+        }
+
+        # PnL
+        if position.entry_price > 0:
+            pnl = (current_price - position.entry_price) / position.entry_price * 100
+            if position.side == Side.SHORT:
+                pnl = -pnl
+            result["pnl_pct"] = pnl * position.leverage
+
+        # Exit signals
+        result["exit_signals"] = self.exit_manager.check_exits(position, current_price, atr)
+
+        # Edge signals
+        if funding_rates or oi_data:
+            result["edge_signals"] = self.edge_detector.detect_all(
+                funding_rates or [], oi_data or []
+            )
+
+        # Market regime
+        if len(df) >= 50:
+            result["regime"] = self.regime_classifier.classify(df, btc_df)
+
+        return result
+
+    def clear_position(self, position_id: int) -> None:
+        self.exit_manager.clear_position(position_id)
+        self._last_events.pop(position_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Legacy class — backward compatibility with existing tests
+# ---------------------------------------------------------------------------
+
+
+class PositionMonitorLegacy:
+    """기존 PositionMonitor (레거시). 테스트 호환용으로 유지."""
+
     def __init__(self):
         self._last_events: dict[int, dict[str, datetime]] = {}
 
@@ -214,3 +288,7 @@ class PositionMonitor:
             if 0 < pnl_pct < 20 and adx > 25:
                 reasons.append(f"추세 강도 양호 (ADX {adx:.0f})")
         return reasons
+
+
+# Backward-compatible alias
+PositionMonitor = PositionMonitorLegacy

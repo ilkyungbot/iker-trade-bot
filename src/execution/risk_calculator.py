@@ -6,7 +6,7 @@ and position validation with safety warnings.
 
 from __future__ import annotations
 
-from src.core.types import Side
+from core.types import Side
 
 
 # ── Round-number offset ──────────────────────────────────────────────

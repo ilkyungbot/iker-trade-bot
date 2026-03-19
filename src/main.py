@@ -36,10 +36,16 @@ from strategy.funding_rate import FundingRateStrategy
 from conversation.state_machine import ConversationStateMachine
 from conversation.signal_tracker import SignalTracker
 from conversation.position_manager import PositionManager
-from strategy.position_monitor import PositionMonitor
+from strategy.position_monitor import PositionMonitor, PositionMonitorV2
+from strategy.edge_detector import EdgeDetector
+from strategy.market_regime import MarketRegimeClassifier
+from execution.exit_manager import ExitManager
+from execution.portfolio_guard import PortfolioGuard
+from execution.risk_calculator import validate_position
 from execution.circuit_breaker import SignalCooldown
 from review.reporter import Reporter, TelegramBotSender
 from review.telegram_commands import TelegramCommandHandler
+from review.trading_journal import TradingJournal
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,6 +79,9 @@ class SignalBot:
         self.signal_tracker = SignalTracker()
         self.position_manager = PositionManager()
         self.position_monitor = PositionMonitor()
+        self.position_monitor_v2 = PositionMonitorV2()
+        self.portfolio_guard = PortfolioGuard()
+        self.trading_journal = TradingJournal()
 
         # Cooldown & API error tracking
         self.cooldown = SignalCooldown(cooldown_minutes=config.signal.signal_cooldown_minutes)
@@ -124,6 +133,10 @@ class SignalBot:
 
         # 주간 리포트: 월요일 00:10 UTC
         scheduler.add_job(self.weekly_report, "cron", day_of_week="mon", hour=0, minute=10)
+
+        # 포트폴리오 가드 리셋
+        scheduler.add_job(self._reset_daily_guard, "cron", hour=0, minute=0)  # UTC midnight
+        scheduler.add_job(self._reset_monthly_guard, "cron", day=1, hour=0, minute=0)  # 1st of month
 
         scheduler.start()
 
@@ -643,12 +656,26 @@ class SignalBot:
                 logger.error(f"Error checking signal outcome: {e}")
 
     async def monitor_manual_positions(self) -> None:
-        """수동 포지션 이벤트 감지 + 푸시."""
+        """수동 포지션 이벤트 감지 v2 — 통합 모니터링."""
         positions = self.position_manager.get_all_active_positions()
         if not positions:
             return
 
         now = datetime.now(timezone.utc)
+
+        # BTC 데이터 (레짐 분류용) — 한 번만 조회
+        btc_df = None
+        try:
+            btc_candles = await self._run_sync(
+                self.collector.get_candles,
+                "BTCUSDT", self.config.signal.primary_interval,
+                start_time=now - timedelta(days=60),
+            )
+            if btc_candles and len(btc_candles) > 50:
+                btc_df = candles_to_dataframe(btc_candles)
+                btc_df = add_all_features(btc_df)
+        except Exception:
+            pass
 
         for pos in positions:
             try:
@@ -674,27 +701,59 @@ class SignalBot:
                     continue
                 current_price = recent[-1].close
 
+                # ATR
+                atr = float(df.iloc[-1].get("atr", 0))
+
                 # 펀딩비
-                funding_rate = 0.0
+                funding_rates = []
                 try:
                     rates = await self._run_sync(
                         self.collector.get_funding_rates,
-                        pos.symbol, start_time=now - timedelta(hours=8),
+                        pos.symbol, start_time=now - timedelta(hours=24),
                     )
                     if rates:
-                        funding_rate = rates[-1].rate
+                        funding_rates = rates
                 except Exception:
                     pass
 
-                # 이벤트 감지
-                events = self.position_monitor.detect_events(pos, df, current_price, funding_rate)
+                # OI
+                oi_data = []
+                try:
+                    oi = await self._run_sync(
+                        self.collector.get_open_interest,
+                        pos.symbol,
+                    )
+                    if oi:
+                        oi_data = oi if isinstance(oi, list) else [oi]
+                except Exception:
+                    pass
 
-                # 이벤트 발송
-                for event in events:
-                    await self.reporter.send_position_event(event, pos)
+                # 통합 체크
+                result = self.position_monitor_v2.check_position(
+                    pos, df, current_price, atr,
+                    funding_rates=funding_rates,
+                    oi_data=oi_data,
+                    btc_df=btc_df,
+                )
+
+                # Exit signals 발송
+                for sig in result["exit_signals"]:
+                    await self.reporter.send_exit_signal_v2(sig)
+
+                # Edge signals 발송
+                for edge in result["edge_signals"]:
+                    await self.reporter.send_edge_alert(edge, pos)
 
             except Exception as e:
                 logger.error(f"Manual position monitor error for {pos.symbol}: {e}", exc_info=True)
+
+    async def _reset_daily_guard(self) -> None:
+        self.portfolio_guard.reset_daily()
+        logger.info("Daily portfolio guard reset")
+
+    async def _reset_monthly_guard(self) -> None:
+        self.portfolio_guard.reset_monthly()
+        logger.info("Monthly portfolio guard reset")
 
     async def daily_report(self) -> None:
         """일간 시그널 리포트."""
