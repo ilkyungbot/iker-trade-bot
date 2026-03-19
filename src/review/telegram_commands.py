@@ -170,7 +170,7 @@ class TelegramCommandHandler:
             await update.message.reply_text(f"분석 실패: {e}")
 
     async def _cmd_briefing(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """현황 — 포지션 대시보드 (없으면 시장 브리핑)."""
+        """현황 — 포지션 대시보드 + 시장 브리핑."""
         if not self._check_auth(update):
             return
         bot = self._bot_ref
@@ -178,7 +178,7 @@ class TelegramCommandHandler:
             await update.message.reply_text("봇이 초기화되지 않았습니다.")
             return
 
-        # Position dashboard first
+        # 1. Position dashboard (if any)
         if hasattr(bot, "position_manager"):
             positions = bot.position_manager.get_active_positions(self.chat_id)
             if positions:
@@ -203,9 +203,8 @@ class TelegramCommandHandler:
 
                 dashboard = bot.reporter.format_position_dashboard(positions, price_data)
                 await update.message.reply_text(dashboard, parse_mode="HTML")
-                return
 
-        # If no positions, show market briefing
+        # 2. Market briefing (always)
         await update.message.reply_text("\U0001f50d 시장 스캔 중...")
         try:
             briefing = await bot.generate_briefing()
@@ -261,8 +260,12 @@ class TelegramCommandHandler:
             await update.message.reply_text("봇이 초기화되지 않았습니다.")
             return
 
-        report = bot.signal_tracker.weekly_report()
-        msg = bot.reporter.format_weekly_accuracy(report)
+        if hasattr(bot, "trading_journal"):
+            report = bot.trading_journal.weekly_report(self.chat_id)
+            msg = bot.reporter.format_journal_report(report)
+        else:
+            report = bot.signal_tracker.weekly_report()
+            msg = bot.reporter.format_weekly_accuracy(report)
         await update.message.reply_text(msg, parse_mode="HTML")
 
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -493,7 +496,6 @@ class TelegramCommandHandler:
                 return
             data["take_profit"] = tp
             context.user_data["position_data"] = data
-            context.user_data["position_flow"] = "ask_reason"
 
             # Show R:R validation
             from execution.risk_calculator import calculate_rr_ratio, validate_position
@@ -504,27 +506,54 @@ class TelegramCommandHandler:
             )
 
             rr_msg = f"\nR:R = 1:{rr:.1f}"
-            if rr < 1.5:
-                rr_msg += " \u26a0\ufe0f (1.5 미만 \u2014 권장하지 않음)"
-            else:
-                rr_msg += " \u2705"
-
             if validation.get("max_loss_usdt"):
                 rr_msg += f"\n최대 손실: {validation['max_loss_usdt']:.1f} USDT ({validation['max_loss_pct']:.1f}%)"
 
+            if rr < 1.5:
+                context.user_data["position_flow"] = "confirm_low_rr"
+                await update.message.reply_text(
+                    rr_msg + f"\n\n\u26a0\ufe0f R:R이 1:{rr:.1f}로 권장 기준(1.5) 미만입니다.\n계속 진행하시겠습니까? (예/아니오)",
+                    parse_mode="HTML",
+                )
+                return
+
+            rr_msg += " \u2705"
+            context.user_data["position_flow"] = "ask_reason"
             await update.message.reply_text(
                 rr_msg + "\n\n" + _POSITION_FLOW_STEPS["ask_reason"],
                 parse_mode="HTML",
             )
 
+        elif step == "confirm_low_rr":
+            if text.strip() in ("예", "네", "ㅇ", "yes"):
+                context.user_data["position_flow"] = "ask_reason"
+                await update.message.reply_text(_POSITION_FLOW_STEPS["ask_reason"])
+            else:
+                await update.message.reply_text("포지션 등록을 취소했습니다. 익절가를 재설정하려면 '신규 포지션'으로 다시 시작하세요.")
+                context.user_data.pop("position_flow", None)
+                context.user_data.pop("position_data", None)
+            return
+
         elif step == "ask_reason":
             reason = text.strip()
             if not reason:
-                reason = "(미입력)"
+                await update.message.reply_text("진입 논리를 입력해주세요. 빈 입력은 허용되지 않습니다.")
+                return
             data["entry_reason"] = reason
 
             # Register position
             if bot and hasattr(bot, "position_manager"):
+                # Guard check FIRST
+                if hasattr(bot, "portfolio_guard"):
+                    positions = bot.position_manager.get_active_positions(self.chat_id)
+                    result = bot.portfolio_guard.check_can_open(positions, data["symbol"])
+                    if not result.allowed:
+                        await update.message.reply_text(f"\u274c 진입 거부: {result.reason}")
+                        context.user_data.pop("position_flow", None)
+                        context.user_data.pop("position_data", None)
+                        return
+
+                # THEN register
                 pos = bot.position_manager.open_position(
                     chat_id=self.chat_id,
                     symbol=data["symbol"],
@@ -540,17 +569,6 @@ class TelegramCommandHandler:
                 # Record in trading journal
                 if hasattr(bot, "trading_journal"):
                     bot.trading_journal.record_entry(pos)
-
-                # Check portfolio guard
-                if hasattr(bot, "portfolio_guard"):
-                    positions = bot.position_manager.get_active_positions(self.chat_id)
-                    result = bot.portfolio_guard.check_can_open(positions[:-1], data["symbol"])
-                    if not result.allowed:
-                        bot.position_manager.close_position(pos.id, self.chat_id)
-                        await update.message.reply_text(f"\u274c 진입 거부: {result.reason}")
-                        context.user_data.pop("position_flow", None)
-                        context.user_data.pop("position_data", None)
-                        return
 
                 text_msg = bot.reporter.format_position_registered(pos)
                 await update.message.reply_text(text_msg, parse_mode="HTML")
