@@ -59,3 +59,16 @@ class SignalCooldown:
     def resume(self) -> None:
         self._halted = False
         self._api_errors = []
+
+    def try_auto_resume(self) -> bool:
+        """Auto-resume if halted and no recent errors (last 30 min)."""
+        if not self._halted:
+            return False
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(minutes=30)
+        recent = [e for e in self._api_errors if e > cutoff]
+        if not recent:
+            self.resume()
+            logger.info("Circuit breaker auto-resumed: no errors in last 30 minutes")
+            return True
+        return False

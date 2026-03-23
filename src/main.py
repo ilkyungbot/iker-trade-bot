@@ -132,6 +132,7 @@ class SignalBot:
         scheduler.add_job(self.weekly_report, "cron", day_of_week="mon", hour=0, minute=10)
         scheduler.add_job(self._reset_daily_guard, "cron", hour=0, minute=0)
         scheduler.add_job(self._reset_monthly_guard, "cron", day=1, hour=0, minute=0)
+        scheduler.add_job(self._try_auto_resume, "cron", minute="*/15")
 
         scheduler.start()
         await self.cmd_handler.start()
@@ -163,6 +164,10 @@ class SignalBot:
         return await self.coin_analyzer.analyze_coin(query)
 
     # --- Kept in orchestrator ---
+
+    async def _try_auto_resume(self) -> None:
+        if self.signal_generator.cooldown.try_auto_resume():
+            await self.reporter.send_alert("Circuit breaker 자동 복구됨")
 
     async def hourly_briefing(self) -> None:
         try:
@@ -233,8 +238,8 @@ class SignalBot:
             if btc_candles and len(btc_candles) > 50:
                 btc_df = candles_to_dataframe(btc_candles)
                 btc_df = add_all_features(btc_df)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Optional data fetch failed (BTC candles): {e}")
 
         for pos in positions:
             try:
@@ -268,8 +273,8 @@ class SignalBot:
                     )
                     if rates:
                         funding_rates = rates
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Optional data fetch failed (funding rates for {pos.symbol}): {e}")
 
                 oi_data = []
                 try:
@@ -279,8 +284,8 @@ class SignalBot:
                     )
                     if oi_list:
                         oi_data = oi_list
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Optional data fetch failed (OI for {pos.symbol}): {e}")
 
                 result = self.position_monitor_v2.check_position(
                     pos, df, current_price, atr,

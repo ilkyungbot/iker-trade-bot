@@ -116,8 +116,8 @@ class SignalGenerator:
                 )
                 if rates:
                     latest_funding = rates[-1].rate
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Optional data fetch failed (funding rate for {symbol}): {e}")
 
             signal_b = self.funding_strategy.generate_signal(
                 df, symbol, latest_funding_rate=latest_funding,

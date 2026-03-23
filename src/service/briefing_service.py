@@ -83,8 +83,8 @@ class BriefingService:
                             "symbol": symbol,
                             "rate": latest,
                         })
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Optional data fetch failed (funding rate for {symbol}): {e}")
 
         funding_alerts.sort(key=lambda x: abs(x["rate"]), reverse=True)
         briefing["funding_alerts"] = funding_alerts
