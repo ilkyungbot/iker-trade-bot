@@ -3,6 +3,8 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    environment:
+      - DATABASE_URL=sqlite:////app/data/signal_bot.db
     volumes:
       - bot-data:/app/data
     logging:

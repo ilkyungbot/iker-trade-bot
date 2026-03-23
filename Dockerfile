@@ -2,17 +2,21 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-# 의존성만 먼저 설치 (캐시 활용)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 소스코드 복사 (site-packages에 설치하지 않음)
+RUN useradd -m -r -s /bin/false botuser \
+    && mkdir -p /app/data \
+    && chown botuser:botuser /app/data
+
 COPY src/ src/
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app/src
 
-HEALTHCHECK --interval=60s --timeout=10s --retries=3 \
-    CMD python -c "print('ok')"
+USER botuser
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD python -c "import sqlite3; sqlite3.connect('/app/data/signal_bot.db').execute('SELECT 1')" || exit 1
 
 CMD ["python", "src/main.py"]
