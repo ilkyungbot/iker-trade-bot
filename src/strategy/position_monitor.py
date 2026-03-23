@@ -63,11 +63,10 @@ class PositionMonitorV2:
         }
 
         # PnL
-        if position.entry_price > 0:
-            pnl = (current_price - position.entry_price) / position.entry_price * 100
-            if position.side == Side.SHORT:
-                pnl = -pnl
-            result["pnl_pct"] = pnl * position.leverage
+        from core.calc import calculate_pnl_percent
+        result["pnl_pct"] = calculate_pnl_percent(
+            position.side, position.entry_price, current_price, position.leverage
+        )
 
         # Exit signals
         result["exit_signals"] = self.exit_manager.check_exits(position, current_price, atr)
@@ -225,12 +224,8 @@ class PositionMonitorLegacy:
         self._last_events.pop(position_id, None)
 
     def _calc_pnl_pct(self, pos: ManualPosition, current_price: float) -> float:
-        if pos.entry_price == 0:
-            return 0.0
-        price_change_pct = (current_price - pos.entry_price) / pos.entry_price * 100
-        if pos.side == Side.SHORT:
-            price_change_pct = -price_change_pct
-        return price_change_pct * pos.leverage
+        from core.calc import calculate_pnl_percent
+        return calculate_pnl_percent(pos.side, pos.entry_price, current_price, pos.leverage)
 
     def _calc_liquidation_distance(self, pos: ManualPosition, current_price: float) -> float:
         if pos.leverage == 0 or pos.entry_price == 0:

@@ -150,12 +150,8 @@ class ExitManager:
         return signals
 
     def _calc_pnl_pct(self, pos: ManualPosition, current_price: float) -> float:
-        if pos.entry_price == 0:
-            return 0.0
-        pct = (current_price - pos.entry_price) / pos.entry_price * 100
-        if pos.side == Side.SHORT:
-            pct = -pct
-        return pct * pos.leverage
+        from core.calc import calculate_pnl_percent
+        return calculate_pnl_percent(pos.side, pos.entry_price, current_price, pos.leverage)
 
     def _calc_sl_distance_pct(
         self, pos: ManualPosition, current_price: float

@@ -20,6 +20,7 @@ except ImportError:
     HAS_TELEGRAM = False
 
 from core.types import ConversationState, Side
+from core.calc import calculate_pnl_percent, calculate_pnl_usdt
 
 logger = logging.getLogger(__name__)
 
@@ -192,11 +193,8 @@ class TelegramCommandHandler:
                         )
                         if candles:
                             cp = candles[-1].close
-                            pnl_pct = (cp - pos.entry_price) / pos.entry_price * 100
-                            if pos.side == Side.SHORT:
-                                pnl_pct = -pnl_pct
-                            pnl_pct *= pos.leverage
-                            pnl_usdt = (pos.margin_usdt * pnl_pct / 100) if pos.margin_usdt else None
+                            pnl_pct = calculate_pnl_percent(pos.side, pos.entry_price, cp, pos.leverage)
+                            pnl_usdt = calculate_pnl_usdt(pos.side, pos.entry_price, cp, pos.leverage, pos.margin_usdt) if pos.margin_usdt else None
                             price_data[pos.symbol] = {"current_price": cp, "pnl_pct": pnl_pct, "pnl_usdt": pnl_usdt}
                     except Exception:
                         pass
@@ -324,10 +322,7 @@ class TelegramCommandHandler:
                 )
                 if candles:
                     current_price = candles[-1].close
-                    price_change = (current_price - pos.entry_price) / pos.entry_price * 100
-                    if pos.side == Side.SHORT:
-                        price_change = -price_change
-                    final_pnl = price_change * pos.leverage
+                    final_pnl = calculate_pnl_percent(pos.side, pos.entry_price, current_price, pos.leverage)
             except Exception:
                 pass
 
@@ -606,10 +601,7 @@ class TelegramCommandHandler:
                         )
                         if candles:
                             current_price = candles[-1].close
-                            price_change = (current_price - target.entry_price) / target.entry_price * 100
-                            if target.side == Side.SHORT:
-                                price_change = -price_change
-                            final_pnl = price_change * target.leverage
+                            final_pnl = calculate_pnl_percent(target.side, target.entry_price, current_price, target.leverage)
                     except Exception:
                         pass
 
