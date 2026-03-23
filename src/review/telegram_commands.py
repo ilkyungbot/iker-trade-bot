@@ -95,7 +95,8 @@ class TelegramCommandHandler:
 
     def _check_auth(self, update: Update) -> bool:
         if not self.chat_id:
-            return True
+            logger.error("No authorized chat_id configured - rejecting all messages")
+            return False
         chat = update.effective_chat
         if chat is None:
             return False
@@ -196,8 +197,8 @@ class TelegramCommandHandler:
                             pnl_pct = calculate_pnl_percent(pos.side, pos.entry_price, cp, pos.leverage)
                             pnl_usdt = calculate_pnl_usdt(pos.side, pos.entry_price, cp, pos.leverage, pos.margin_usdt) if pos.margin_usdt else None
                             price_data[pos.symbol] = {"current_price": cp, "pnl_pct": pnl_pct, "pnl_usdt": pnl_usdt}
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Failed for {pos.symbol}: {e}")
 
                 dashboard = bot.reporter.format_position_dashboard(positions, price_data)
                 await update.message.reply_text(dashboard, parse_mode="HTML")
@@ -323,8 +324,8 @@ class TelegramCommandHandler:
                 if candles:
                     current_price = candles[-1].close
                     final_pnl = calculate_pnl_percent(pos.side, pos.entry_price, current_price, pos.leverage)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed for {pos.symbol}: {e}")
 
             bot.position_manager.close_position(pos.id, self.chat_id)
             if hasattr(bot, "position_monitor"):
@@ -333,7 +334,8 @@ class TelegramCommandHandler:
                 try:
                     candles_data = await bot._run_sync(bot.collector.get_candles, pos.symbol, "1", start_time=datetime.now(timezone.utc) - timedelta(minutes=5))
                     exit_price = candles_data[-1].close if candles_data else pos.entry_price
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Optional data fetch failed (exit price for {pos.symbol}): {e}")
                     exit_price = pos.entry_price
                 bot.trading_journal.record_exit(pos.id, exit_price, "manual")
             text = bot.reporter.format_position_closed(pos, final_pnl)
@@ -445,8 +447,8 @@ class TelegramCommandHandler:
                                 f"\n\u2022 ATR 기반 추천 손절: {_format_price(suggested_sl)} (레버리지 반영 -{leveraged_loss:.1f}%)"
                                 f"\n\u2022 {data['leverage']}x 청산가: {_format_price(liq_price)}"
                             )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Optional data fetch failed (ATR SL guide): {e}")
 
             await update.message.reply_text(
                 _POSITION_FLOW_STEPS["ask_stop_loss"] + sl_guide,
@@ -602,8 +604,8 @@ class TelegramCommandHandler:
                         if candles:
                             current_price = candles[-1].close
                             final_pnl = calculate_pnl_percent(target.side, target.entry_price, current_price, target.leverage)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Failed for {target.symbol}: {e}")
 
                     bot.position_manager.close_position(target.id, self.chat_id)
                     if hasattr(bot, "position_monitor"):
@@ -612,7 +614,8 @@ class TelegramCommandHandler:
                         try:
                             candles_data = await bot._run_sync(bot.collector.get_candles, target.symbol, "1", start_time=datetime.now(timezone.utc) - timedelta(minutes=5))
                             exit_price = candles_data[-1].close if candles_data else target.entry_price
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Optional data fetch failed (exit price for {target.symbol}): {e}")
                             exit_price = target.entry_price
                         bot.trading_journal.record_exit(target.id, exit_price, "manual")
                     text_msg = bot.reporter.format_position_closed(target, final_pnl)

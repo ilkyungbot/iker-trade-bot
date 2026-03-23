@@ -34,7 +34,7 @@ class DatabaseConfig:
     @classmethod
     def from_env(cls) -> "DatabaseConfig":
         return cls(
-            url=os.getenv("DATABASE_URL", "sqlite:///signal_bot.db"),
+            url=os.getenv("DATABASE_URL", "sqlite:///data/signal_bot.db"),
         )
 
 
@@ -83,11 +83,22 @@ class AppConfig:
     telegram: TelegramConfig
     signal: SignalConfig
 
+    def validate(self) -> None:
+        errors: list[str] = []
+        if not self.telegram.bot_token:
+            errors.append("TELEGRAM_BOT_TOKEN is required")
+        if not self.telegram.chat_id:
+            errors.append("TELEGRAM_CHAT_ID is required for security")
+        if errors:
+            raise ValueError("Config validation failed: " + "; ".join(errors))
+
     @classmethod
     def from_env(cls) -> "AppConfig":
-        return cls(
+        config = cls(
             bybit=BybitConfig.from_env(),
             database=DatabaseConfig.from_env(),
             telegram=TelegramConfig.from_env(),
             signal=SignalConfig.from_env(),
         )
+        config.validate()
+        return config
