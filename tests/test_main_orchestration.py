@@ -78,7 +78,7 @@ def _make_signal_msg(symbol="BTCUSDT"):
 
 class TestSignalScore:
     def test_strong_beats_moderate(self):
-        from main import SignalBot
+        from service.signal_generator import SignalGenerator
         strong = _make_signal_msg()
         s = Signal(
             timestamp=datetime.now(timezone.utc),
@@ -95,6 +95,6 @@ class TestSignalScore:
             indicators={},
             risk_reward_ratio=1.5,
         )
-        assert SignalBot._signal_score(strong) > SignalBot._signal_score(moderate)
+        assert SignalGenerator._signal_score(strong) > SignalGenerator._signal_score(moderate)
 
 
