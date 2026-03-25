@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class SignalTracker:
     """시그널 결과 추적 및 정확도 리포트."""
 
-    def __init__(self, db_path: str = "signal_bot.db"):
+    def __init__(self, db_path: str = "/app/data/signal_bot.db"):
         self._db_path = db_path
         self._init_db()
 

@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class PositionManager:
     """복수 수동 포지션 관리. SQLite 저장."""
 
-    def __init__(self, db_path: str = "signal_bot.db"):
+    def __init__(self, db_path: str = "/app/data/signal_bot.db"):
         self._db_path = db_path
         self._init_db()
 
