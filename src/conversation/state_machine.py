@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 class ConversationStateMachine:
     """한 번에 1개 시그널만 활성. 상태는 SQLite에 저장."""
 
-    def __init__(self, db_path: str = "signal_bot.db"):
+    def __init__(self, db_path: str = "/app/data/signal_bot.db"):
         self._db_path = db_path
         self._init_db()
 
